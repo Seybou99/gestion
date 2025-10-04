@@ -10,6 +10,13 @@ export default function ArticlesLayout() {
           headerShown: false, // Header personnalisé dans le composant
         }}
       />
+      <Stack.Screen
+        name="[id]"
+        options={{
+          title: 'Détails',
+          headerShown: false, // Header personnalisé dans le composant
+        }}
+      />
     </Stack>
   );
 }

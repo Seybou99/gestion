@@ -1,17 +1,41 @@
 import { Icon, Label, NativeTabs } from "expo-router/unstable-native-tabs";
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { ActivityIndicator, StatusBar, StyleSheet, View } from 'react-native';
+import { Provider } from 'react-redux';
+import { PersistGate } from 'redux-persist/integration/react';
+
 import { LoginForm } from '../components/LoginForm';
 import { RegisterForm } from '../components/RegisterForm';
 import { AuthProvider, useAuth } from '../contexts/AuthContext';
+import { appInitializer } from '../services/AppInitializer';
+import { persistor, store } from '../store';
 
 // Composant principal de l'application avec authentification
 const AppContent: React.FC = () => {
   const { user, loading, isAuthenticated } = useAuth();
   const [showRegister, setShowRegister] = useState(false);
+  const [appInitialized, setAppInitialized] = useState(false);
 
-  // Afficher un loader pendant la vérification de l'authentification
-  if (loading) {
+  // Initialiser l'application au démarrage
+  useEffect(() => {
+    const initializeApp = async () => {
+      try {
+        console.log('🚀 Initialisation de l\'application...');
+        await appInitializer.initialize();
+        setAppInitialized(true);
+        console.log('✅ Application initialisée avec succès');
+      } catch (error) {
+        console.error('❌ Erreur lors de l\'initialisation:', error);
+        // Continuer même en cas d'erreur pour ne pas bloquer l'app
+        setAppInitialized(true);
+      }
+    };
+
+    initializeApp();
+  }, []);
+
+  // Afficher un loader pendant l'initialisation ou la vérification de l'authentification
+  if (loading || !appInitialized) {
     return (
       <View style={styles.loadingContainer}>
         <ActivityIndicator size="large" color="#007AFF" />
@@ -36,6 +60,10 @@ const AppContent: React.FC = () => {
           <NativeTabs.Trigger name="stock">
             <Label>Stock</Label>
             <Icon sf="cube.box.fill" drawable="custom_stock_drawable" />
+          </NativeTabs.Trigger>
+          <NativeTabs.Trigger name="ventes">
+            <Label>Ventes</Label>
+            <Icon sf="cart.fill" drawable="custom_sales_drawable" />
           </NativeTabs.Trigger>
           <NativeTabs.Trigger name="profil">
             <Label>Profil</Label>
@@ -65,11 +93,15 @@ const AppContent: React.FC = () => {
 };
 
 // Composant racine avec les providers
-export default function TabLayout() {
+export default function RootLayout() {
   return (
-    <AuthProvider>
-      <AppContent />
-    </AuthProvider>
+    <Provider store={store}>
+      <PersistGate loading={<ActivityIndicator size="large" color="#007AFF" />} persistor={persistor}>
+        <AuthProvider>
+          <AppContent />
+        </AuthProvider>
+      </PersistGate>
+    </Provider>
   );
 }
 

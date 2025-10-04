@@ -6,6 +6,7 @@ require('dotenv').config();
 
 // Import des routes
 const authRoutes = require('./routes/auth');
+const productRoutes = require('./routes/products');
 const logger = require('./utils/logger');
 
 const app = express();
@@ -71,6 +72,9 @@ app.get('/health', (req, res) => {
 app.use('/api/auth/login', authLimiter);
 app.use('/api/auth/register', authLimiter);
 app.use('/api/auth', authRoutes);
+
+// Routes produits
+app.use('/api/products', productRoutes);
 
 // Middleware de gestion des erreurs
 app.use((err, req, res, next) => {

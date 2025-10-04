@@ -67,3 +67,5 @@
 {"code":"auth/email-already-exists","email":"test@gmail.com","error":"The email address is already in use by another account.","ip":"127.0.0.1","level":"error","message":"Erreur inscription","service":"auth-backend","timestamp":"2025-10-02 19:24:20"}
 {"apiUrl":"http://0.0.0.0:3000","authRoutes":"http://0.0.0.0:3000/api/auth","environment":"development","level":"info","message":"Serveur démarré","port":"3000","service":"auth-backend","timestamp":"2025-10-02 19:59:48"}
 {"email":"diokolo@gmail.com","ip":"192.168.1.200","level":"info","message":"Connexion réussie","service":"auth-backend","timestamp":"2025-10-02 20:13:11","uid":"Sgi4kREfbeeBBLYhsdmHA9nlPuC3"}
+{"apiUrl":"http://0.0.0.0:3000","authRoutes":"http://0.0.0.0:3000/api/auth","environment":"development","level":"info","message":"Serveur démarré","port":"3000","service":"auth-backend","timestamp":"2025-10-04 15:03:23"}
+{"email":"diokolo@gmail.com","ip":"192.168.1.200","level":"info","message":"Connexion réussie","service":"auth-backend","timestamp":"2025-10-04 15:31:17","uid":"Sgi4kREfbeeBBLYhsdmHA9nlPuC3"}

@@ -1,0 +1,57 @@
+rules_version = '2';
+
+// Règles Firestore pour le développement
+// ATTENTION: Ces règles sont PERMISSIVES pour le développement uniquement
+// Pour la production, utilisez des règles plus strictes
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Règles pour les produits (articles)
+    match /products/{document} {
+      // Permettre lecture et écriture à tous les utilisateurs authentifiés
+      // Pour le développement, on autorise tout
+      allow read, write: if true;
+    }
+    
+    // Règles pour le stock
+    match /stock/{document} {
+      allow read, write: if true;
+    }
+    
+    // Règles pour les ventes
+    match /sales/{document} {
+      allow read, write: if true;
+    }
+    
+    // Règles pour les clients
+    match /customers/{document} {
+      allow read, write: if true;
+    }
+    
+    // Règles pour les catégories
+    match /categories/{document} {
+      allow read, write: if true;
+    }
+    
+    // Règles pour les emplacements
+    match /locations/{document} {
+      allow read, write: if true;
+    }
+    
+    // Règles pour les éléments de vente
+    match /sale_items/{document} {
+      allow read, write: if true;
+    }
+    
+    // Règles pour la synchronisation
+    match /sync_metadata/{document} {
+      allow read, write: if true;
+    }
+    
+    // Règles par défaut - refuser tout le reste
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

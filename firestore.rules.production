@@ -1,0 +1,75 @@
+rules_version = '2';
+
+// Règles Firestore pour la PRODUCTION
+// Ces règles sont plus sécurisées et nécessitent une authentification
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Fonction helper pour vérifier l'authentification
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    // Fonction helper pour vérifier que l'utilisateur est le propriétaire
+    function isOwner(userId) {
+      return request.auth.uid == userId;
+    }
+    
+    // Règles pour les produits (articles)
+    match /products/{document} {
+      // Lecture autorisée pour tous les utilisateurs authentifiés
+      allow read: if isAuthenticated();
+      
+      // Écriture autorisée pour tous les utilisateurs authentifiés
+      allow create, update, delete: if isAuthenticated();
+    }
+    
+    // Règles pour le stock
+    match /stock/{document} {
+      allow read: if isAuthenticated();
+      allow create, update, delete: if isAuthenticated();
+    }
+    
+    // Règles pour les ventes
+    match /sales/{document} {
+      allow read: if isAuthenticated();
+      allow create, update, delete: if isAuthenticated();
+    }
+    
+    // Règles pour les clients
+    match /customers/{document} {
+      allow read: if isAuthenticated();
+      allow create, update, delete: if isAuthenticated();
+    }
+    
+    // Règles pour les catégories
+    match /categories/{document} {
+      allow read: if isAuthenticated();
+      allow create, update, delete: if isAuthenticated();
+    }
+    
+    // Règles pour les emplacements
+    match /locations/{document} {
+      allow read: if isAuthenticated();
+      allow create, update, delete: if isAuthenticated();
+    }
+    
+    // Règles pour les éléments de vente
+    match /sale_items/{document} {
+      allow read: if isAuthenticated();
+      allow create, update, delete: if isAuthenticated();
+    }
+    
+    // Règles pour la synchronisation
+    match /sync_metadata/{document} {
+      allow read: if isAuthenticated();
+      allow create, update, delete: if isAuthenticated();
+    }
+    
+    // Règles par défaut - refuser tout le reste
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
