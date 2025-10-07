@@ -1,19 +1,21 @@
+import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useEffect, useState } from 'react';
 import {
-  Alert,
-  Modal,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  View,
+    Alert,
+    Modal,
+    ScrollView,
+    StyleSheet,
+    Text,
+    TextInput,
+    TouchableOpacity,
+    View,
 } from 'react-native';
 import { useDispatch } from 'react-redux';
 import { ZohoCard } from '../../components/ui/ZohoCard';
 import { databaseService } from '../../services/DatabaseService';
 import { AppDispatch } from '../../store';
+import { Category } from '../../store/slices/categorySlice';
 import { deleteProduct, updateProduct } from '../../store/slices/productSlice';
 
 interface Product {
@@ -27,26 +29,26 @@ interface Product {
   price_sell: number;
   margin: number;
   unit: string;
-  images?: string;
+  images?: string[];
   is_active: boolean;
   sync_status: 'pending' | 'synced' | 'error';
   created_at: string;
   updated_at: string;
+  quantity_current?: number;
+  quantity_min?: number;
+  quantity_max?: number;
+  last_movement_date?: string;
+  last_movement_type?: string;
 }
 
-interface Category {
+interface CategoryOption {
   id: string;
   name: string;
   description: string;
   color: string;
 }
 
-const categories = [
-  { id: 'id-mgcca8jw-efif6bljnev', name: 'Électronique', description: 'Appareils électroniques', color: '#3B82F6' },
-  { id: 'id-mgcca8jx-shrg2l4axc', name: 'Vêtements', description: 'Vêtements et accessoires', color: '#EF4444' },
-  { id: 'id-mgcca8jy-yxr9d8v9kjj', name: 'Alimentation', description: 'Produits alimentaires', color: '#10B981' },
-  { id: 'id-mgcca8jy-29dtu0bgsxw', name: 'Autres', description: 'Autres produits', color: '#6B7280' },
-];
+// Les catégories sont maintenant chargées depuis la base de données
 
 const units = ['pcs', 'kg', 'g', 'l', 'ml', 'm', 'cm', 'm²'];
 
@@ -54,6 +56,9 @@ export default function ArticleDetailsScreen() {
   const { id } = useLocalSearchParams();
   const router = useRouter();
   const dispatch = useDispatch<AppDispatch>();
+  
+  // S'assurer que id est une string
+  const productId = Array.isArray(id) ? id[0] : id;
   
   const [product, setProduct] = useState<Product | null>(null);
   const [loading, setLoading] = useState(true);
@@ -63,21 +68,26 @@ export default function ArticleDetailsScreen() {
   
   // État pour le formulaire d'édition
   const [editProduct, setEditProduct] = useState<Partial<Product>>({});
+  
+  // État pour les catégories
+  const [availableCategories, setAvailableCategories] = useState<CategoryOption[]>([]);
 
   useEffect(() => {
     loadProduct();
+    loadCategories();
   }, [id]);
 
   const loadProduct = async () => {
     try {
-      console.log('🔍 [DETAILS] Chargement du produit:', id);
-      const products = await databaseService.getAll('products');
-      const foundProduct = products.find((p: any) => p.id === id);
+      console.log('🔍 [DETAILS] Chargement du produit:', productId);
+      const products = await databaseService.getProductsWithStock();
+      const foundProduct = products.find((p: any) => p.id === productId);
       
       if (foundProduct) {
-        setProduct(foundProduct);
-        setEditProduct(foundProduct);
-        console.log('✅ [DETAILS] Produit trouvé:', foundProduct.name);
+        const typedProduct = foundProduct as Product;
+        setProduct(typedProduct);
+        setEditProduct({ ...typedProduct });
+        console.log('✅ [DETAILS] Produit trouvé:', typedProduct.name);
       } else {
         console.log('❌ [DETAILS] Produit non trouvé');
         Alert.alert('Erreur', 'Produit non trouvé');
@@ -89,6 +99,22 @@ export default function ArticleDetailsScreen() {
       router.back();
     } finally {
       setLoading(false);
+    }
+  };
+
+  const loadCategories = async () => {
+    try {
+      const categoriesData = await databaseService.getAll('categories') as Category[];
+      const formattedCategories: CategoryOption[] = categoriesData.map(cat => ({
+        id: cat.id,
+        name: cat.name,
+        description: cat.description || '',
+        color: cat.color || '#007AFF'
+      }));
+      setAvailableCategories(formattedCategories);
+    } catch (error) {
+      console.error('❌ [DETAILS] Erreur chargement catégories:', error);
+      setAvailableCategories([]);
     }
   };
 
@@ -106,6 +132,18 @@ export default function ArticleDetailsScreen() {
       // Calculer la nouvelle marge
       const priceBuy = parseFloat(editProduct.price_buy?.toString() || '0');
       const priceSell = parseFloat(editProduct.price_sell?.toString() || '0');
+      
+      // Validation des prix
+      if (isNaN(priceBuy) || isNaN(priceSell)) {
+        Alert.alert('Erreur', 'Les prix doivent être des nombres valides');
+        return;
+      }
+      
+      if (priceBuy < 0 || priceSell < 0) {
+        Alert.alert('Erreur', 'Les prix ne peuvent pas être négatifs');
+        return;
+      }
+      
       const margin = priceBuy > 0 ? ((priceSell - priceBuy) / priceBuy) * 100 : 0;
       
       const updatedProduct = {
@@ -183,12 +221,12 @@ export default function ArticleDetailsScreen() {
   };
 
   const getCategoryName = (categoryId: string) => {
-    const category = categories.find(c => c.id === categoryId);
+    const category = availableCategories.find(c => c.id === categoryId);
     return category?.name || 'Catégorie inconnue';
   };
 
   const getCategoryColor = (categoryId: string) => {
-    const category = categories.find(c => c.id === categoryId);
+    const category = availableCategories.find(c => c.id === categoryId);
     return category?.color || '#6B7280';
   };
 
@@ -232,18 +270,20 @@ export default function ArticleDetailsScreen() {
         <View style={styles.headerActions}>
           <TouchableOpacity 
             onPress={() => setShowEditModal(true)}
-            style={[styles.actionButton, styles.editButton]}
+            style={styles.actionButton}
           >
-            <Text style={styles.actionButtonText}>✏️</Text>
+            <Ionicons name="create-outline" size={24} color="#000" />
           </TouchableOpacity>
           <TouchableOpacity 
             onPress={handleDeleteProduct}
-            style={[styles.actionButton, styles.deleteButton]}
+            style={styles.actionButton}
             disabled={loadingDelete}
           >
-            <Text style={styles.actionButtonText}>
-              {loadingDelete ? '⏳' : '🗑️'}
-            </Text>
+            <Ionicons 
+              name={loadingDelete ? "hourglass-outline" : "trash-outline"} 
+              size={24} 
+              color="#000" 
+            />
           </TouchableOpacity>
         </View>
       </View>
@@ -274,6 +314,13 @@ export default function ArticleDetailsScreen() {
             <View style={styles.detailItem}>
               <Text style={styles.label}>Unité</Text>
               <Text style={styles.value}>{product.unit}</Text>
+            </View>
+            
+            <View style={styles.detailItem}>
+              <Text style={styles.label}>Stock actuel</Text>
+              <Text style={[styles.value, { color: (product.quantity_current || 0) === 0 ? '#EF4444' : (product.quantity_current || 0) <= 10 ? '#F59E0B' : '#10B981' }]}>
+                {product.quantity_current || 0} {product.unit}
+              </Text>
             </View>
             
             <View style={styles.detailItem}>
@@ -397,7 +444,7 @@ export default function ArticleDetailsScreen() {
             <View style={styles.formGroup}>
               <Text style={styles.formLabel}>Catégorie</Text>
               <View style={styles.categorySelector}>
-                {categories.map((category) => (
+                {availableCategories.map((category) => (
                   <TouchableOpacity
                     key={category.id}
                     style={[
@@ -529,16 +576,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     marginLeft: 8,
-  },
-  editButton: {
-    backgroundColor: '#3B82F6',
-  },
-  deleteButton: {
-    backgroundColor: '#EF4444',
-  },
-  actionButtonText: {
-    fontSize: 16,
-    color: '#fff',
   },
   loadingContainer: {
     flex: 1,

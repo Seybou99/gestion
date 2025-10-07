@@ -1,16 +1,16 @@
 // Service Firebase réel avec Firestore
 import {
-    addDoc,
-    collection,
-    deleteDoc,
-    doc,
-    getDoc,
-    getDocs,
-    orderBy,
-    query,
-    serverTimestamp,
-    updateDoc,
-    where
+  addDoc,
+  collection,
+  deleteDoc,
+  doc,
+  getDoc,
+  getDocs,
+  orderBy,
+  query,
+  serverTimestamp,
+  updateDoc,
+  where
 } from 'firebase/firestore';
 import { getFirebaseId, isValidLocalId } from '../utils/firebaseIdMapper';
 import { db, FIREBASE_ENABLED, FIREBASE_TIMEOUT, FORCE_OFFLINE_MODE } from './firebase-config';
@@ -97,7 +97,9 @@ export interface FirebaseService {
   // Stock
   getStock(): Promise<Stock[]>;
   getStockByProduct(productId: string): Promise<Stock | null>;
+  createStock(stock: Omit<Stock, 'id' | 'created_at' | 'updated_at'>): Promise<string>;
   updateStock(id: string, stock: Partial<Stock>): Promise<void>;
+  deleteStock(id: string): Promise<void>;
   // Sales
   getSales(): Promise<Sale[]>;
   createSale(sale: Omit<Sale, 'id' | 'created_at' | 'updated_at'>): Promise<string>;
@@ -432,16 +434,164 @@ class FirebaseServiceImpl implements FirebaseService {
     }
   }
 
+  async createStock(stock: Omit<Stock, 'id' | 'created_at' | 'updated_at'>): Promise<string> {
+    console.log('🚀 [FIREBASE DEBUG] Début createStock');
+    console.log('🚀 [FIREBASE DEBUG] Stock reçu:', stock);
+    
+    try {
+      console.log('🔄 [FIREBASE DEBUG] Création collection reference');
+      const stockRef = collection(db, 'stock');
+      const now = serverTimestamp();
+      
+      // Filtrer les valeurs undefined (Firestore ne les accepte pas)
+      console.log('🔄 [FIREBASE DEBUG] Filtrage des valeurs undefined');
+      const cleanStock = Object.fromEntries(
+        Object.entries(stock).filter(([_, value]) => value !== undefined)
+      ) as any;
+      console.log('✅ [FIREBASE DEBUG] Stock nettoyé:', cleanStock);
+      
+      const stockData = {
+        ...cleanStock,
+        created_at: now,
+        updated_at: now,
+        sync_status: 'synced' as const,
+      };
+      console.log('📦 [FIREBASE DEBUG] StockData final:', stockData);
+      
+      console.log('🔄 [FIREBASE DEBUG] Appel addDoc avec timeout');
+      
+      // Vérifier si Firebase est activé ou en mode offline forcé
+      if (!FIREBASE_ENABLED || !db || FORCE_OFFLINE_MODE) {
+        console.log(FORCE_OFFLINE_MODE ? '📱 Mode OFFLINE forcé, création locale uniquement' : '📱 Firebase désactivé, création locale uniquement');
+        throw new Error(FORCE_OFFLINE_MODE ? 'Mode offline' : 'Firebase désactivé');
+      }
+
+      // Ajouter un timeout pour éviter les blocages
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('Timeout Firebase: addDoc a pris plus de 3 secondes')), FIREBASE_TIMEOUT);
+      });
+      
+      const addDocPromise = addDoc(stockRef, stockData);
+      
+      const docRef = await Promise.race([addDocPromise, timeoutPromise]) as any;
+      console.log('✅ [FIREBASE DEBUG] addDoc terminé, ID:', docRef.id);
+      
+      console.log('✅ [FIREBASE DEBUG] Stock créé dans Firestore:', docRef.id);
+      return docRef.id;
+    } catch (error) {
+      // Gérer les timeouts et mode offline silencieusement
+      if (error instanceof Error && error.message.includes('Timeout Firebase')) {
+        console.log('⚠️ Firebase timeout création stock (normal en développement)');
+        throw new Error('Firebase temporairement indisponible');
+      }
+      
+      // Gérer le mode offline silencieusement
+      if (error instanceof Error && error.message.includes('Mode offline')) {
+        console.log('📱 Mode offline - création locale uniquement (normal)');
+        throw new Error('Mode offline');
+      }
+      
+      console.error('❌ [FIREBASE DEBUG] Erreur création stock:', error);
+      console.error('❌ [FIREBASE DEBUG] Stack trace:', error instanceof Error ? error.stack : 'No stack');
+      throw error;
+    }
+  }
+
   async updateStock(id: string, updates: Partial<Stock>): Promise<void> {
     try {
+      console.log('🔄 [FIREBASE DEBUG] Début updateStock');
+      console.log('🔄 [FIREBASE DEBUG] ID reçu:', id);
+      console.log('🔄 [FIREBASE DEBUG] Updates reçus:', updates);
+
+      // Vérifier si Firebase est activé ou en mode offline forcé
+      if (!FIREBASE_ENABLED || !db || FORCE_OFFLINE_MODE) {
+        console.log(FORCE_OFFLINE_MODE ? '📱 Mode OFFLINE forcé, mise à jour locale uniquement' : '📱 Firebase désactivé, mise à jour locale uniquement');
+        throw new Error(FORCE_OFFLINE_MODE ? 'Mode offline' : 'Firebase désactivé');
+      }
+
+      console.log('🔄 [FIREBASE DEBUG] Création document reference avec ID:', id);
       const stockRef = doc(db, 'stock', id);
-      await updateDoc(stockRef, {
-        ...updates,
+      
+      // Filtrer les valeurs undefined (Firestore ne les accepte pas)
+      const cleanUpdates = Object.fromEntries(
+        Object.entries(updates).filter(([_, value]) => value !== undefined)
+      ) as any;
+
+      const updateData = {
+        ...cleanUpdates,
         updated_at: serverTimestamp(),
-      });
-      console.log('✅ Stock mis à jour dans Firestore:', id);
+        sync_status: 'synced',
+      };
+
+      console.log('✅ [FIREBASE DEBUG] UpdateData final:', updateData);
+      console.log('🔄 [FIREBASE DEBUG] Appel updateDoc avec timeout');
+      
+      // Utiliser Promise.race pour timeout
+      await Promise.race([
+        updateDoc(stockRef, updateData),
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Timeout Firebase: updateStock a pris plus de 3 secondes')), FIREBASE_TIMEOUT)
+        )
+      ]);
+
+      console.log('✅ [FIREBASE DEBUG] updateDoc terminé');
+      console.log('✅ [FIREBASE DEBUG] Stock mis à jour dans Firestore:', id);
     } catch (error) {
-      console.error('❌ Erreur mise à jour stock:', error);
+      // Gérer les timeouts et mode offline silencieusement
+      if (error instanceof Error && error.message.includes('Timeout Firebase')) {
+        console.log('⚠️ Firebase timeout mise à jour stock (normal en développement)');
+        throw new Error('Firebase temporairement indisponible');
+      }
+      // Gérer le mode offline silencieusement
+      if (error instanceof Error && error.message.includes('Mode offline')) {
+        console.log('📱 Mode offline - mise à jour locale uniquement (normal)');
+        throw new Error('Mode offline');
+      }
+      console.error('❌ [FIREBASE DEBUG] Erreur mise à jour stock:', error);
+      console.error('❌ [FIREBASE DEBUG] Stack trace:', error instanceof Error ? error.stack : 'No stack');
+      throw error;
+    }
+  }
+
+  async deleteStock(id: string): Promise<void> {
+    try {
+      console.log('🗑️ [FIREBASE DEBUG] Début deleteStock');
+      console.log('🗑️ [FIREBASE DEBUG] ID reçu:', id);
+
+      // Vérifier si Firebase est activé ou en mode offline forcé
+      if (!FIREBASE_ENABLED || !db || FORCE_OFFLINE_MODE) {
+        console.log(FORCE_OFFLINE_MODE ? '📱 Mode OFFLINE forcé, suppression locale uniquement' : '📱 Firebase désactivé, suppression locale uniquement');
+        throw new Error(FORCE_OFFLINE_MODE ? 'Mode offline' : 'Firebase désactivé');
+      }
+
+      console.log('🗑️ [FIREBASE DEBUG] Création document reference avec ID:', id);
+      const stockRef = doc(db, 'stock', id);
+
+      console.log('🗑️ [FIREBASE DEBUG] Appel deleteDoc avec timeout');
+      
+      // Utiliser Promise.race pour timeout
+      await Promise.race([
+        deleteDoc(stockRef),
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Timeout Firebase: deleteStock a pris plus de 3 secondes')), FIREBASE_TIMEOUT)
+        )
+      ]);
+
+      console.log('✅ [FIREBASE DEBUG] deleteDoc terminé');
+      console.log('✅ [FIREBASE DEBUG] Stock supprimé de Firestore:', id);
+    } catch (error) {
+      // Gérer les timeouts et mode offline silencieusement
+      if (error instanceof Error && error.message.includes('Timeout Firebase')) {
+        console.log('⚠️ Firebase timeout suppression stock (normal en développement)');
+        throw new Error('Firebase temporairement indisponible');
+      }
+      // Gérer le mode offline silencieusement
+      if (error instanceof Error && error.message.includes('Mode offline')) {
+        console.log('📱 Mode offline - suppression locale uniquement (normal)');
+        throw new Error('Mode offline');
+      }
+      console.error('❌ [FIREBASE DEBUG] Erreur suppression stock:', error);
+      console.error('❌ [FIREBASE DEBUG] Stack trace:', error instanceof Error ? error.stack : 'No stack');
       throw error;
     }
   }
@@ -571,6 +721,257 @@ class FirebaseServiceImpl implements FirebaseService {
       return [];
     } catch (error) {
       console.error('❌ Erreur récupération mises à jour:', error);
+      throw error;
+    }
+  }
+
+  // ===== MÉTHODES POUR LES CATÉGORIES =====
+
+  async getCategories(): Promise<any[]> {
+    try {
+      console.log('🔥 Récupération des catégories depuis Firestore avec timeout');
+      
+      // Vérifier si Firebase est activé ou en mode offline forcé
+      if (!FIREBASE_ENABLED || !db || FORCE_OFFLINE_MODE) {
+        console.log(FORCE_OFFLINE_MODE ? '📱 Mode OFFLINE forcé' : '📱 Firebase désactivé, retour tableau vide');
+        return [];
+      }
+
+      // Ajouter un timeout pour éviter les blocages
+      const timeoutPromise = new Promise<any[]>((_, reject) => {
+        setTimeout(() => reject(new Error('Timeout Firebase: getCategories a pris plus de 3 secondes')), FIREBASE_TIMEOUT);
+      });
+      
+      const getCategoriesPromise = (async () => {
+        const categoriesRef = collection(db, 'categories');
+        const snapshot = await getDocs(query(categoriesRef, orderBy('created_at', 'desc')));
+        
+        const categories = snapshot.docs.map(doc => ({
+          id: doc.id,
+          ...doc.data(),
+          created_at: doc.data().created_at?.toDate?.()?.toISOString() || doc.data().created_at,
+          updated_at: doc.data().updated_at?.toDate?.()?.toISOString() || doc.data().updated_at,
+        })) as any[];
+        
+        console.log(`📂 ${categories.length} catégories récupérées depuis Firestore`);
+        return categories;
+      })();
+      
+      return await Promise.race([getCategoriesPromise, timeoutPromise]);
+    } catch (error) {
+      // Gérer les timeouts silencieusement pour éviter les erreurs UI
+      if (error instanceof Error && error.message.includes('Timeout Firebase')) {
+        console.log('⚠️ Firebase timeout (normal en développement)');
+        return []; // Retourner un tableau vide au lieu de lancer une erreur
+      }
+      console.error('❌ Erreur récupération catégories:', error);
+      throw error;
+    }
+  }
+
+  async getCategoryById(id: string): Promise<any | null> {
+    try {
+      const categoryRef = doc(db, 'categories', id);
+      const snapshot = await getDoc(categoryRef);
+      
+      if (snapshot.exists()) {
+        return {
+          id: snapshot.id,
+          ...snapshot.data(),
+          created_at: snapshot.data().created_at?.toDate?.()?.toISOString() || snapshot.data().created_at,
+          updated_at: snapshot.data().updated_at?.toDate?.()?.toISOString() || snapshot.data().updated_at,
+        } as any;
+      }
+      
+      return null;
+    } catch (error) {
+      console.error('❌ Erreur récupération catégorie:', error);
+      throw error;
+    }
+  }
+
+  async createCategory(category: Omit<any, 'id' | 'created_at' | 'updated_at'>): Promise<string> {
+    console.log('🚀 [FIREBASE DEBUG] Début createCategory');
+    console.log('🚀 [FIREBASE DEBUG] Category reçue:', category);
+    
+    try {
+      console.log('🔄 [FIREBASE DEBUG] Création collection reference');
+      const categoriesRef = collection(db, 'categories');
+      const now = serverTimestamp();
+      
+      // Filtrer les valeurs undefined (Firestore ne les accepte pas)
+      console.log('🔄 [FIREBASE DEBUG] Filtrage des valeurs undefined');
+      const cleanCategory = Object.fromEntries(
+        Object.entries(category).filter(([_, value]) => value !== undefined)
+      ) as any;
+      console.log('✅ [FIREBASE DEBUG] Category nettoyée:', cleanCategory);
+      
+      const categoryData = {
+        ...cleanCategory,
+        created_at: now,
+        updated_at: now,
+        sync_status: 'synced' as const,
+      };
+      console.log('📦 [FIREBASE DEBUG] CategoryData final:', categoryData);
+      
+      console.log('🔄 [FIREBASE DEBUG] Appel addDoc avec timeout');
+      
+      // Vérifier si Firebase est activé ou en mode offline forcé
+      if (!FIREBASE_ENABLED || !db || FORCE_OFFLINE_MODE) {
+        console.log(FORCE_OFFLINE_MODE ? '📱 Mode OFFLINE forcé, création locale uniquement' : '📱 Firebase désactivé, création locale uniquement');
+        throw new Error(FORCE_OFFLINE_MODE ? 'Mode offline' : 'Firebase désactivé');
+      }
+
+      // Ajouter un timeout pour éviter les blocages
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('Timeout Firebase: addDoc a pris plus de 3 secondes')), FIREBASE_TIMEOUT);
+      });
+      
+      const addDocPromise = addDoc(categoriesRef, categoryData);
+      
+      const docRef = await Promise.race([addDocPromise, timeoutPromise]) as any;
+      console.log('✅ [FIREBASE DEBUG] addDoc terminé, ID:', docRef.id);
+      
+      console.log('✅ [FIREBASE DEBUG] Catégorie créée dans Firestore:', docRef.id);
+      return docRef.id;
+    } catch (error) {
+      // Gérer les timeouts et mode offline silencieusement
+      if (error instanceof Error && error.message.includes('Timeout Firebase')) {
+        console.log('⚠️ Firebase timeout création catégorie (normal en développement)');
+        throw new Error('Firebase temporairement indisponible');
+      }
+      
+      // Gérer le mode offline silencieusement
+      if (error instanceof Error && error.message.includes('Mode offline')) {
+        console.log('📱 Mode offline - création locale uniquement (normal)');
+        throw new Error('Mode offline');
+      }
+      
+      console.error('❌ [FIREBASE DEBUG] Erreur création catégorie:', error);
+      console.error('❌ [FIREBASE DEBUG] Stack trace:', error instanceof Error ? error.stack : 'No stack');
+      throw error;
+    }
+  }
+
+  async updateCategory(id: string, updates: Partial<any>): Promise<void> {
+    try {
+      console.log('🔄 [FIREBASE DEBUG] Début updateCategory');
+      console.log('🔄 [FIREBASE DEBUG] ID reçu:', id);
+      console.log('🔄 [FIREBASE DEBUG] Updates reçus:', updates);
+
+      if (!FIREBASE_ENABLED || !db || FORCE_OFFLINE_MODE) {
+        console.log(FORCE_OFFLINE_MODE ? '📱 Mode OFFLINE forcé, mise à jour locale uniquement' : '📱 Firebase désactivé, mise à jour locale uniquement');
+        throw new Error(FORCE_OFFLINE_MODE ? 'Mode offline' : 'Firebase désactivé');
+      }
+
+      let firebaseId = id;
+      if (isValidLocalId(id)) {
+        console.log('🔄 [FIREBASE DEBUG] ID local détecté, recherche Firebase ID...');
+        const foundFirebaseId = await getFirebaseId(id);
+        if (foundFirebaseId) {
+          firebaseId = foundFirebaseId;
+          console.log('✅ [FIREBASE DEBUG] Firebase ID trouvé:', firebaseId);
+        } else {
+          console.log('⚠️ [FIREBASE DEBUG] Aucun Firebase ID trouvé, utilisation ID local');
+        }
+      } else if ((updates as any).firebase_id) {
+        firebaseId = (updates as any).firebase_id;
+        console.log('🔄 [FIREBASE DEBUG] Utilisation firebase_id des updates:', firebaseId);
+      } else {
+        console.log('🔄 [FIREBASE DEBUG] Utilisation ID direct:', firebaseId);
+      }
+
+      console.log('🔄 [FIREBASE DEBUG] Création document reference avec ID:', firebaseId);
+      const categoryRef = doc(db, 'categories', firebaseId);
+      
+      const cleanUpdates = Object.fromEntries(
+        Object.entries(updates).filter(([_, value]) => value !== undefined)
+      ) as any;
+
+      const updateData = {
+        ...cleanUpdates,
+        updated_at: serverTimestamp(),
+        sync_status: 'synced',
+      };
+
+      console.log('✅ [FIREBASE DEBUG] UpdateData final:', updateData);
+      console.log('🔄 [FIREBASE DEBUG] Appel updateDoc avec timeout');
+      
+      await Promise.race([
+        updateDoc(categoryRef, updateData),
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Timeout Firebase: updateCategory a pris plus de 3 secondes')), FIREBASE_TIMEOUT)
+        )
+      ]);
+
+      console.log('✅ [FIREBASE DEBUG] updateDoc terminé');
+      console.log('✅ [FIREBASE DEBUG] Catégorie mise à jour dans Firestore:', id);
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('Timeout Firebase')) {
+        console.log('⚠️ Firebase timeout mise à jour catégorie (normal en développement)');
+        throw new Error('Firebase temporairement indisponible');
+      }
+      if (error instanceof Error && error.message.includes('Mode offline')) {
+        console.log('📱 Mode offline - mise à jour locale uniquement (normal)');
+        throw new Error('Mode offline');
+      }
+      console.error('❌ [FIREBASE DEBUG] Erreur mise à jour catégorie:', error);
+      console.error('❌ [FIREBASE DEBUG] Stack trace:', error instanceof Error ? error.stack : 'No stack');
+      throw error;
+    }
+  }
+
+  async deleteCategory(id: string): Promise<void> {
+    try {
+      console.log('🗑️ [FIREBASE DEBUG] Début deleteCategory');
+      console.log('🗑️ [FIREBASE DEBUG] ID reçu:', id);
+
+      if (!FIREBASE_ENABLED || !db || FORCE_OFFLINE_MODE) {
+        console.log(FORCE_OFFLINE_MODE ? '📱 Mode OFFLINE forcé, suppression locale uniquement' : '📱 Firebase désactivé, suppression locale uniquement');
+        throw new Error(FORCE_OFFLINE_MODE ? 'Mode offline' : 'Firebase désactivé');
+      }
+
+      let firebaseId = id;
+      
+      // Vérifier si c'est un ID local ou Firebase
+      if (isValidLocalId(id)) {
+        console.log('🔄 [FIREBASE DEBUG] ID local détecté, recherche Firebase ID...');
+        const foundFirebaseId = await getFirebaseId(id);
+        if (foundFirebaseId) {
+          firebaseId = foundFirebaseId;
+          console.log('✅ [FIREBASE DEBUG] Firebase ID trouvé:', firebaseId);
+        } else {
+          console.log('⚠️ [FIREBASE DEBUG] Aucun Firebase ID trouvé, utilisation ID local');
+        }
+      } else {
+        console.log('🔄 [FIREBASE DEBUG] ID Firebase direct:', firebaseId);
+      }
+
+      console.log('🔄 [FIREBASE DEBUG] Création document reference avec ID:', firebaseId);
+      const categoryRef = doc(db, 'categories', firebaseId);
+      
+      console.log('🔄 [FIREBASE DEBUG] Appel deleteDoc avec timeout');
+      
+      await Promise.race([
+        deleteDoc(categoryRef),
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Timeout Firebase: deleteCategory a pris plus de 3 secondes')), FIREBASE_TIMEOUT)
+        )
+      ]);
+
+      console.log('✅ [FIREBASE DEBUG] deleteDoc terminé');
+      console.log('✅ [FIREBASE DEBUG] Catégorie supprimée de Firestore:', id);
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('Timeout Firebase')) {
+        console.log('⚠️ Firebase timeout suppression catégorie (normal en développement)');
+        throw new Error('Firebase temporairement indisponible');
+      }
+      if (error instanceof Error && error.message.includes('Mode offline')) {
+        console.log('📱 Mode offline - suppression locale uniquement (normal)');
+        throw new Error('Mode offline');
+      }
+      console.error('❌ [FIREBASE DEBUG] Erreur suppression catégorie:', error);
+      console.error('❌ [FIREBASE DEBUG] Stack trace:', error instanceof Error ? error.stack : 'No stack');
       throw error;
     }
   }

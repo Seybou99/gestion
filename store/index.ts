@@ -3,6 +3,7 @@ import { configureStore } from '@reduxjs/toolkit';
 import { persistReducer, persistStore } from 'redux-persist';
 
 import authSlice from './slices/authSlice';
+import categorySlice from './slices/categorySlice';
 import customerSlice from './slices/customerSlice';
 import networkSlice from './slices/networkSlice';
 import productSlice from './slices/productSlice';
@@ -15,7 +16,7 @@ const persistConfig = {
   key: 'root',
   storage: AsyncStorage,
   whitelist: ['auth', 'sync', 'network'], // Persister seulement l'auth, sync et network
-  blacklist: ['products', 'stock', 'sales', 'customers'], // Les données métier sont dans SQLite
+  blacklist: ['products', 'categories', 'stock', 'sales', 'customers'], // Les données métier sont dans SQLite
 };
 
 // Configuration de persistance pour l'auth
@@ -49,6 +50,7 @@ export const store = configureStore({
   reducer: {
     auth: persistedAuthReducer,
     products: productSlice,
+    categories: categorySlice,
     stock: stockSlice,
     sales: salesSlice,
     customers: customerSlice,

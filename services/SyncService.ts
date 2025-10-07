@@ -234,6 +234,26 @@ class SyncService {
               firebase_id: firebaseId 
             });
             console.log(`✅ Statut local mis à jour pour ${record_id}`);
+          } else if (table_name === 'categories') {
+            console.log(`🔍 [SYNC DEBUG] Création catégorie avec données:`, parsedData);
+            const firebaseId = await firebaseService.createCategory(parsedData);
+            console.log(`✅ Catégorie créée dans Firebase: ${firebaseId}`);
+            // Mettre à jour le statut local
+            await databaseService.update('categories', record_id, { 
+              sync_status: 'synced',
+              firebase_id: firebaseId 
+            });
+            console.log(`✅ Statut local mis à jour pour ${record_id}`);
+          } else if (table_name === 'stock') {
+            console.log(`🔍 [SYNC DEBUG] Création stock avec données:`, parsedData);
+            const firebaseId = await firebaseService.createStock(parsedData);
+            console.log(`✅ Stock créé dans Firebase: ${firebaseId}`);
+            // Mettre à jour le statut local
+            await databaseService.update('stock', record_id, { 
+              sync_status: 'synced',
+              firebase_id: firebaseId 
+            });
+            console.log(`✅ Statut local mis à jour pour ${record_id}`);
           } else {
             console.log(`⚠️ [SYNC DEBUG] Table non supportée pour CREATE: ${table_name}`);
           }
@@ -253,6 +273,32 @@ class SyncService {
                   console.log(`✅ Produit mis à jour dans Firebase: ${record_id}`);
                 }
                 await databaseService.update('products', record_id, { sync_status: 'synced' });
+              } else if (table_name === 'categories') {
+                // Utiliser l'utilitaire pour obtenir l'ID Firebase
+                const firebaseId = await getFirebaseId(record_id);
+                
+                if (firebaseId) {
+                  await firebaseService.updateCategory(firebaseId, parsedData);
+                  console.log(`✅ Catégorie mise à jour dans Firebase: ${firebaseId}`);
+                } else {
+                  console.log(`⚠️ Pas de firebase_id trouvé pour ${record_id}, tentative avec ID local`);
+                  await firebaseService.updateCategory(record_id, parsedData);
+                  console.log(`✅ Catégorie mise à jour dans Firebase: ${record_id}`);
+                }
+                await databaseService.update('categories', record_id, { sync_status: 'synced' });
+              } else if (table_name === 'stock') {
+                // Utiliser l'utilitaire pour obtenir l'ID Firebase
+                const firebaseId = await getFirebaseId(record_id);
+                
+                if (firebaseId) {
+                  await firebaseService.updateStock(firebaseId, parsedData);
+                  console.log(`✅ Stock mis à jour dans Firebase: ${firebaseId}`);
+                } else {
+                  console.log(`⚠️ Pas de firebase_id trouvé pour ${record_id}, tentative avec ID local`);
+                  await firebaseService.updateStock(record_id, parsedData);
+                  console.log(`✅ Stock mis à jour dans Firebase: ${record_id}`);
+                }
+                await databaseService.update('stock', record_id, { sync_status: 'synced' });
               }
               break;
           
@@ -273,6 +319,38 @@ class SyncService {
                 console.log(`⚠️ Aucun ID Firebase trouvé pour ${record_id}, produit probablement créé en mode offline uniquement`);
               }
             }
+          } else if (table_name === 'categories') {
+            // Pour la suppression, vérifier si l'ID est un ID Firebase ou local
+            if (isValidFirebaseId(record_id)) {
+              // C'est un ID Firebase, suppression directe
+              await firebaseService.deleteCategory(record_id);
+              console.log(`✅ Catégorie supprimée de Firebase: ${record_id}`);
+            } else {
+              // C'est un ID local, chercher l'ID Firebase correspondant
+              const firebaseId = await getFirebaseId(record_id);
+              if (firebaseId) {
+                await firebaseService.deleteCategory(firebaseId);
+                console.log(`✅ Catégorie supprimée de Firebase avec ID local: ${record_id} -> ${firebaseId}`);
+              } else {
+                console.log(`⚠️ Aucun ID Firebase trouvé pour ${record_id}, catégorie probablement créée en mode offline uniquement`);
+              }
+            }
+          } else if (table_name === 'stock') {
+            // Pour la suppression, vérifier si l'ID est un ID Firebase ou local
+            if (isValidFirebaseId(record_id)) {
+              // C'est un ID Firebase, suppression directe
+              await firebaseService.deleteStock(record_id);
+              console.log(`✅ Stock supprimé de Firebase: ${record_id}`);
+            } else {
+              // C'est un ID local, chercher l'ID Firebase correspondant
+              const firebaseId = await getFirebaseId(record_id);
+              if (firebaseId) {
+                await firebaseService.deleteStock(firebaseId);
+                console.log(`✅ Stock supprimé de Firebase avec ID local: ${record_id} -> ${firebaseId}`);
+              } else {
+                console.log(`⚠️ Aucun ID Firebase trouvé pour ${record_id}, stock probablement créé en mode offline uniquement`);
+              }
+            }
           }
           break;
           
@@ -281,9 +359,9 @@ class SyncService {
       }
       
     } catch (error) {
-      // Masquer les erreurs "Mode offline" qui sont normales
+      // Masquer les erreurs de mode offline qui sont normales
       if (error instanceof Error && error.message.includes('Mode offline')) {
-        console.log(`📱 Mode offline - opération ${op} pour ${table_name}:${record_id} (normal)`);
+        console.log(`📱 Mode offline - opération ${op} pour ${table_name}:${record_id} reportée (normal)`);
       } else {
         console.error(`❌ Erreur envoi opération ${op} pour ${table_name}:${record_id}:`, error);
       }
@@ -323,7 +401,7 @@ class SyncService {
   private async handleSyncError(operation: SyncOperation, error: any) {
     const newRetryCount = operation.retry_count + 1;
     
-    // Masquer les erreurs "Mode offline" qui sont normales
+    // Masquer les erreurs de mode offline qui sont normales
     const isOfflineError = error instanceof Error && error.message.includes('Mode offline');
     
     if (newRetryCount >= this.config.maxRetries) {
@@ -334,10 +412,10 @@ class SyncService {
         error_message: error.message || 'Erreur inconnue',
       });
       
-      if (!isOfflineError) {
-        console.error(`❌ Erreur définitive pour l'opération ${operation.id}:`, error);
-      } else {
+      if (isOfflineError) {
         console.log(`📱 Mode offline - erreur définitive pour l'opération ${operation.id} (normal)`);
+      } else {
+        console.error(`❌ Erreur définitive pour l'opération ${operation.id}:`, error);
       }
     } else {
       // Programmer un nouveau retry
@@ -347,10 +425,10 @@ class SyncService {
         error_message: error.message || 'Erreur inconnue',
       });
       
-      if (!isOfflineError) {
-        console.log(`⏳ Retry ${newRetryCount}/${this.config.maxRetries} pour l'opération ${operation.id}`);
-      } else {
+      if (isOfflineError) {
         console.log(`📱 Mode offline - retry ${newRetryCount}/${this.config.maxRetries} pour l'opération ${operation.id} (normal)`);
+      } else {
+        console.log(`⏳ Retry ${newRetryCount}/${this.config.maxRetries} pour l'opération ${operation.id}`);
       }
       
       // Programmer le retry avec délai

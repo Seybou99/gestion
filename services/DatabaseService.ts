@@ -52,6 +52,19 @@ export interface Sale {
   sync_timestamp?: string;
 }
 
+export interface Category {
+  id: string;
+  name: string;
+  description?: string;
+  color?: string;
+  icon?: string;
+  is_active: boolean;
+  sync_status: 'pending' | 'synced' | 'error';
+  firebase_id?: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface SaleItem {
   id: string;
   sale_id: string;
@@ -120,7 +133,7 @@ class DatabaseServiceImpl implements DatabaseService {
 
   async createTables(): Promise<void> {
     // Créer les clés de stockage si elles n'existent pas
-    const tables = ['products', 'stock', 'sales', 'sale_items', 'customers', 'sync_queue', 'sync_metadata'];
+    const tables = ['products', 'categories', 'stock', 'sales', 'sale_items', 'customers', 'sync_queue', 'sync_metadata'];
     
     for (const table of tables) {
       const existing = await AsyncStorage.getItem(table);
@@ -355,29 +368,10 @@ class DatabaseServiceImpl implements DatabaseService {
 // Instance singleton
 export const databaseService = new DatabaseServiceImpl();
 
-// Fonction utilitaire pour générer des données de test
+// Fonction utilitaire pour générer des données de test (sans catégories)
 export const seedTestData = async () => {
   try {
     console.log('🌱 Génération des données de test...');
-
-    // Créer des catégories de test
-    const categories = [
-      { name: 'Électronique', description: 'Appareils électroniques' },
-      { name: 'Vêtements', description: 'Habits et accessoires' },
-      { name: 'Alimentation', description: 'Produits alimentaires' },
-      { name: 'Maison', description: 'Articles de maison' },
-    ];
-
-    const categoryIds: string[] = [];
-    for (const category of categories) {
-      const id = await databaseService.insert('categories', {
-        ...category,
-        is_active: true,
-        created_at: new Date().toISOString(),
-        sync_status: 'synced' as const,
-      });
-      categoryIds.push(id);
-    }
 
     // Créer un emplacement de test
     const locationId = await databaseService.insert('locations', {
@@ -388,78 +382,6 @@ export const seedTestData = async () => {
       created_at: new Date().toISOString(),
       sync_status: 'synced' as const,
     });
-
-    // Créer des produits de test
-    const products = [
-      {
-        name: 'iPhone 15 Pro',
-        description: 'Dernier iPhone avec puce A17 Pro',
-        sku: 'IPH15PRO-001',
-        barcode: '1234567890123',
-        category_id: categoryIds[0],
-        price_buy: 999,
-        price_sell: 1299,
-        margin: 30.08,
-        unit: 'pcs',
-        images: '["iphone15pro.jpg"]',
-        is_active: true,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-        sync_status: 'synced' as const,
-      },
-      {
-        name: 'Riz parfumé',
-        description: 'Riz de qualité supérieure',
-        sku: 'RIZ-001',
-        barcode: '1234567890124',
-        category_id: categoryIds[2],
-        price_buy: 2500,
-        price_sell: 3000,
-        margin: 20,
-        unit: 'kg',
-        images: '["riz.jpg"]',
-        is_active: true,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-        sync_status: 'synced' as const,
-      },
-      {
-        name: 'T-shirt coton',
-        description: 'T-shirt en coton 100%',
-        sku: 'TSHIRT-001',
-        barcode: '1234567890125',
-        category_id: categoryIds[1],
-        price_buy: 2500,
-        price_sell: 4000,
-        margin: 60,
-        unit: 'pcs',
-        images: '["tshirt.jpg"]',
-        is_active: true,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-        sync_status: 'synced' as const,
-      },
-    ];
-
-    const productIds: string[] = [];
-    for (const product of products) {
-      const id = await databaseService.insert('products', product);
-      productIds.push(id);
-
-      // Créer le stock pour chaque produit
-      await databaseService.insert('stock', {
-        product_id: id,
-        location_id: locationId,
-        quantity_current: Math.floor(Math.random() * 50) + 10,
-        quantity_min: 5,
-        quantity_max: 100,
-        last_movement_date: new Date().toISOString(),
-        last_movement_type: 'in',
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-        sync_status: 'synced' as const,
-      });
-    }
 
     // Créer des clients de test
     const customers = [
@@ -494,10 +416,9 @@ export const seedTestData = async () => {
     }
 
     console.log('✅ Données de test générées avec succès');
-    console.log(`📦 ${productIds.length} produits créés`);
     console.log(`👥 ${customerIds.length} clients créés`);
     console.log(`🏪 1 emplacement créé`);
-    console.log(`📂 ${categoryIds.length} catégories créées`);
+    console.log('📂 Les catégories doivent être créées via l\'interface utilisateur');
 
   } catch (error) {
     console.error('❌ Erreur génération données de test:', error);

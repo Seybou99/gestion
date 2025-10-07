@@ -51,11 +51,29 @@ export async function handleOfflineDelete(productId: string): Promise<boolean> {
           created_at: new Date().toISOString(),
         });
         
-        console.log('📝 [OFFLINE DELETE] Ajouté à la queue de sync');
+        console.log('📝 [OFFLINE DELETE] Ajouté à la queue de sync pour suppression Firebase');
         return true; // La suppression locale a réussi
       }
     } else {
       console.log('📱 [OFFLINE DELETE] Aucun ID Firebase - produit créé en mode offline uniquement');
+      
+      // Si le produit était synchronisé mais n'a pas de firebase_id, 
+      // c'est peut-être un problème de synchronisation - ajouter à la queue
+      if (productToDelete.sync_status === 'synced') {
+        console.log('🔄 [OFFLINE DELETE] Produit marqué comme synchronisé mais pas de firebase_id - ajout à la queue');
+        await databaseService.insert('sync_queue', {
+          table_name: 'products',
+          record_id: productId,
+          operation: 'delete',
+          data: JSON.stringify(productToDelete),
+          priority: 2, // Priorité plus faible car pas sûr de l'ID Firebase
+          status: 'pending',
+          retry_count: 0,
+          created_at: new Date().toISOString(),
+        });
+        console.log('📝 [OFFLINE DELETE] Ajouté à la queue de sync pour vérification');
+      }
+      
       return true; // La suppression locale a réussi
     }
 

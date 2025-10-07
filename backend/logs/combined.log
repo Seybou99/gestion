@@ -69,3 +69,8 @@
 {"email":"diokolo@gmail.com","ip":"192.168.1.200","level":"info","message":"Connexion réussie","service":"auth-backend","timestamp":"2025-10-02 20:13:11","uid":"Sgi4kREfbeeBBLYhsdmHA9nlPuC3"}
 {"apiUrl":"http://0.0.0.0:3000","authRoutes":"http://0.0.0.0:3000/api/auth","environment":"development","level":"info","message":"Serveur démarré","port":"3000","service":"auth-backend","timestamp":"2025-10-04 15:03:23"}
 {"email":"diokolo@gmail.com","ip":"192.168.1.200","level":"info","message":"Connexion réussie","service":"auth-backend","timestamp":"2025-10-04 15:31:17","uid":"Sgi4kREfbeeBBLYhsdmHA9nlPuC3"}
+{"apiUrl":"http://0.0.0.0:3000","authRoutes":"http://0.0.0.0:3000/api/auth","environment":"development","level":"info","message":"Serveur démarré","port":"3000","service":"auth-backend","timestamp":"2025-10-05 02:52:44"}
+{"email":"kjvkh@jb.lki","level":"info","message":"Email de vérification généré","service":"auth-backend","timestamp":"2025-10-05 20:49:11","uid":"cobeoZoKlpRFKso8dWZ83usu9Vm1"}
+{"apiUrl":"http://0.0.0.0:3000","authRoutes":"http://0.0.0.0:3000/api/auth","environment":"development","level":"info","message":"Serveur démarré","port":"3000","service":"auth-backend","timestamp":"2025-10-07 10:54:51"}
+{"apiUrl":"http://0.0.0.0:3000","authRoutes":"http://0.0.0.0:3000/api/auth","environment":"development","level":"info","message":"Serveur démarré","port":"3000","service":"auth-backend","timestamp":"2025-10-07 10:57:58"}
+{"email":"diokolo@gmail.com","ip":"127.0.0.1","level":"info","message":"Connexion réussie","service":"auth-backend","timestamp":"2025-10-07 11:02:28","uid":"Sgi4kREfbeeBBLYhsdmHA9nlPuC3"}

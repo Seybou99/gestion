@@ -1,7 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 // Configuration de l'API - Connecté à Firebase via le backend new-project
-const API_BASE_URL = 'http://192.168.1.200:3000'; // Backend Firebase actif - IP réseau local
+const API_BASE_URL = 'http://192.168.8.126:3000'; // Backend Firebase actif - IP réseau local
 
 // Types pour les réponses API
 export interface ApiResponse<T = any> {
@@ -44,7 +44,7 @@ export interface RegisterData {
 // Classe pour gérer les appels API
 class ApiService {
   private baseURL: string;
-  private mockMode: boolean = true; // Mode mock pour tester sans backend
+  private mockMode: boolean = false; // Mode mock pour tester sans backend
 
   constructor() {
     this.baseURL = API_BASE_URL;

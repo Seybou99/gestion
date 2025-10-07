@@ -1,3 +1,4 @@
+import { Ionicons } from '@expo/vector-icons';
 import React from 'react';
 import {
     Alert,
@@ -8,6 +9,8 @@ import {
     TouchableOpacity,
     View,
 } from 'react-native';
+import { CompleteSyncButton } from '../../components/CompleteSyncButton';
+import { NetworkTestButton } from '../../components/NetworkTestButton';
 import { useAuth } from '../../contexts/AuthContext';
 
 /**
@@ -179,6 +182,14 @@ export default function PlusScreen() {
         </>
       ))}
 
+      {/* Synchronisation */}
+      {renderSettingsSection('Synchronisation', (
+        <View style={styles.syncSection}>
+          <NetworkTestButton style={styles.syncButton} />
+          <CompleteSyncButton style={styles.syncButton} />
+        </View>
+      ))}
+
       {/* Gestion des données */}
       {renderSettingsSection('Données', (
         <>
@@ -189,7 +200,7 @@ export default function PlusScreen() {
             handleExportData
           )}
           {renderSettingItem(
-            '🗑️',
+            <Ionicons name="trash-outline" size={20} color="#FF3B30" />,
             'Vider le cache',
             'Supprimer les données temporaires',
             handleClearCache
@@ -451,5 +462,11 @@ const styles = StyleSheet.create({
     color: '#999',
     textAlign: 'center',
     marginBottom: 4,
+  },
+  syncSection: {
+    gap: 8,
+  },
+  syncButton: {
+    marginVertical: 4,
   },
 });

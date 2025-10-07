@@ -1,15 +1,15 @@
 {
   "expo": {
-    "name": "UI Playground",
-    "slug": "expo-ui-playground",
+    "name": "SmartStock",
+    "slug": "SmartStock",
     "version": "1.0.0",
     "orientation": "portrait",
-    "scheme": "expouiplayground",
+    "scheme": "SmartStock",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.betoatexpo.expo-ui-playground",
+      "bundleIdentifier": "com.betoatexpo.SmartStock",
       "appleTeamId": "T2A8YY9YDW",
       "icon": "./assets/icon.icon"
     },

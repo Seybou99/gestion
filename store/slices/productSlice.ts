@@ -55,7 +55,7 @@ export const fetchProducts = createAsyncThunk(
     try {
       // OPTIMISATION : Toujours charger local d'abord pour un affichage rapide
       console.log('⚡ Chargement rapide des produits locaux...');
-      const localProducts = await databaseService.getAll('products');
+      const localProducts = await databaseService.getProductsWithStock();
       
       // Toujours retourner les produits locaux immédiatement
       console.log(`⚡ ${localProducts.length} produits locaux chargés instantanément`);
@@ -108,7 +108,7 @@ export const fetchProducts = createAsyncThunk(
 
 export const createProduct = createAsyncThunk(
   'products/createProduct',
-  async (productData: Omit<Product, 'id' | 'created_at' | 'updated_at' | 'sync_status'>, { dispatch, getState }) => {
+  async (productData: Omit<Product, 'id' | 'created_at' | 'updated_at' | 'sync_status'> & { stock_quantity?: number }, { dispatch, getState }) => {
     console.log('🚀 [REDUX DEBUG] Début createProduct');
     console.log('🚀 [REDUX DEBUG] ProductData reçu:', productData);
     
@@ -129,6 +129,83 @@ export const createProduct = createAsyncThunk(
       const id = await databaseService.insert('products', newProduct);
       console.log('✅ [REDUX DEBUG] databaseService.insert terminé, ID:', id);
       
+      // Créer l'entrée de stock si stock_quantity est fourni
+      if (productData.stock_quantity !== undefined) {
+        console.log('📦 [REDUX DEBUG] Création entrée de stock:', productData.stock_quantity);
+        const stockId = await databaseService.insert('stock', {
+          product_id: id,
+          quantity_current: productData.stock_quantity,
+          quantity_min: 0,
+          quantity_max: 1000,
+          last_movement_date: new Date().toISOString(),
+          last_movement_type: 'initial',
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          sync_status: 'pending',
+        });
+        console.log('✅ [REDUX DEBUG] Stock créé localement:', stockId);
+        
+        // Synchroniser le stock avec Firebase en arrière-plan si en ligne
+        if (state.network.isConnected) {
+          console.log('🔄 [REDUX DEBUG] Tentative sync stock Firebase en arrière-plan');
+          firebaseService.createStock({
+            product_id: id,
+            quantity_current: productData.stock_quantity,
+            quantity_min: 0,
+            quantity_max: 1000,
+            last_movement_date: new Date().toISOString(),
+            last_movement_type: 'initial',
+          }).then(firebaseStockId => {
+            console.log('✅ [REDUX DEBUG] Sync stock Firebase réussie, ID:', firebaseStockId);
+            // Mettre à jour le statut de sync ET le firebase_id pour le stock
+            databaseService.update('stock', stockId, { 
+              sync_status: 'synced',
+              firebase_id: firebaseStockId 
+            });
+          }).catch(error => {
+            console.log('⚠️ [REDUX DEBUG] Sync stock Firebase échouée:', error.message);
+            // Ajouter à la queue de sync pour tentative ultérieure
+            databaseService.insert('sync_queue', {
+              table_name: 'stock',
+              record_id: stockId,
+              operation: 'create',
+              data: JSON.stringify({
+                product_id: id,
+                quantity_current: productData.stock_quantity,
+                quantity_min: 0,
+                quantity_max: 1000,
+                last_movement_date: new Date().toISOString(),
+                last_movement_type: 'initial',
+              }),
+              priority: 1,
+              status: 'pending',
+              retry_count: 0,
+              created_at: new Date().toISOString(),
+            });
+          });
+        } else {
+          // Mode offline - ajouter le stock à la queue de sync
+          console.log('📱 [REDUX DEBUG] Mode offline - ajout stock à la queue de synchronisation');
+          databaseService.insert('sync_queue', {
+            table_name: 'stock',
+            record_id: stockId,
+            operation: 'create',
+            data: JSON.stringify({
+              product_id: id,
+              quantity_current: productData.stock_quantity,
+              quantity_min: 0,
+              quantity_max: 1000,
+              last_movement_date: new Date().toISOString(),
+              last_movement_type: 'initial',
+            }),
+            priority: 1,
+            status: 'pending',
+            retry_count: 0,
+            created_at: new Date().toISOString(),
+          });
+        }
+      }
+      
       const createdProduct = { ...newProduct, id };
           console.log('✅ [REDUX DEBUG] Produit créé localement:', id);
           
@@ -137,8 +214,11 @@ export const createProduct = createAsyncThunk(
             console.log('🔄 [REDUX DEBUG] Tentative sync Firebase en arrière-plan');
             firebaseService.createProduct(productData).then(firebaseId => {
               console.log('✅ [REDUX DEBUG] Sync Firebase réussie, ID:', firebaseId);
-              // Mettre à jour le statut de sync
-              databaseService.update('products', id, { sync_status: 'synced' });
+              // Mettre à jour le statut de sync ET le firebase_id
+              databaseService.update('products', id, { 
+                sync_status: 'synced',
+                firebase_id: firebaseId 
+              });
             }).catch(error => {
               // Masquer les erreurs de timeout Firebase et mode offline
               if (error instanceof Error && error.message.includes('Timeout Firebase')) {
@@ -244,7 +324,7 @@ export const updateProduct = createAsyncThunk(
         console.log('🔄 [REDUX DEBUG] Tentative sync Firebase en arrière-plan');
         firebaseService.updateProduct(id, productData).then(() => {
           console.log('✅ [REDUX DEBUG] Sync Firebase réussie');
-          // Mettre à jour le statut de sync
+          // Mettre à jour le statut de sync (le firebase_id existe déjà)
           databaseService.update('products', id, { sync_status: 'synced' });
         }).catch(error => {
           // Masquer les erreurs de timeout Firebase et mode offline

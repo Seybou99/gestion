@@ -1,3 +1,4 @@
+import { Ionicons } from '@expo/vector-icons';
 import React, { useEffect, useState } from 'react';
 import {
     ActivityIndicator,
@@ -238,7 +239,7 @@ export default function VentesScreen() {
           style={styles.removeButton}
           onPress={() => removeFromCart(item.product_id)}
         >
-          <Text style={styles.removeButtonText}>🗑️</Text>
+          <Ionicons name="trash-outline" size={16} color="#FF3B30" />
         </TouchableOpacity>
       </View>
       <Text style={styles.cartItemTotal}>{item.total.toLocaleString()} FCFA</Text>
@@ -331,7 +332,7 @@ export default function VentesScreen() {
                       style={styles.removeButton}
                       onPress={() => removeFromCart(item.product_id)}
                     >
-                      <Text style={styles.removeButtonText}>🗑️</Text>
+                      <Ionicons name="trash-outline" size={16} color="#FF3B30" />
                     </TouchableOpacity>
                   </View>
                   <Text style={styles.cartItemTotal}>{item.total.toLocaleString()} FCFA</Text>
