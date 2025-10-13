@@ -1,3 +1,4 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { createAsyncThunk, createSlice, PayloadAction } from '@reduxjs/toolkit';
 import { databaseService } from '../../services/DatabaseService';
 import { firebaseService } from '../../services/FirebaseService';
@@ -54,51 +55,20 @@ export const fetchProducts = createAsyncThunk(
     
     try {
       // OPTIMISATION : Toujours charger local d'abord pour un affichage rapide
-      console.log('⚡ Chargement rapide des produits locaux...');
       const localProducts = await databaseService.getProductsWithStock();
       
-      // Toujours retourner les produits locaux immédiatement
-      console.log(`⚡ ${localProducts.length} produits locaux chargés instantanément`);
-      dispatch(setOfflineMode(true));
-      
-      // En arrière-plan, essayer de synchroniser avec Firebase si en ligne
-      if (state.network.isConnected) {
-        console.log('🔄 Synchronisation en arrière-plan...');
-        // Ne pas attendre Firebase, laisser tourner en arrière-plan
-        firebaseService.getProducts().then(firebaseProducts => {
-          if (firebaseProducts.length > 0) {
-            console.log(`🔄 ${firebaseProducts.length} produits Firebase récupérés en arrière-plan`);
-            dispatch(setOfflineMode(false));
-            dispatch(setLastSync(new Date().toISOString()));
-            // Optionnel: mettre à jour les produits si nécessaire
-          }
-        }).catch(error => {
-          // Masquer les erreurs de timeout Firebase
-          if (error instanceof Error && error.message.includes('Timeout Firebase')) {
-            console.log('⚠️ Firebase timeout (normal), utilisation des données locales');
-          } else {
-            console.log('⚠️ Sync Firebase échouée en arrière-plan, utilisation des données locales');
-          }
-        });
+      // Définir le mode offline seulement si pas de connexion
+      if (!state.network.isConnected) {
+        dispatch(setOfflineMode(true));
+      } else {
+        dispatch(setOfflineMode(false));
       }
+      
+      // Synchronisation Firebase désactivée pour éviter les boucles infinies
+      // Utiliser le bouton de téléchargement manuel dans l'interface
       
       return localProducts;
       
-      // Si pas de données locales, essayer Firebase
-      if (state.network.isConnected) {
-        try {
-          const products = await firebaseService.getProducts();
-          dispatch(setLastSync(new Date().toISOString()));
-          dispatch(setOfflineMode(false));
-          return products;
-        } catch (error) {
-          console.error('Erreur récupération Firebase:', error);
-          dispatch(setOfflineMode(true));
-          return [];
-        }
-      }
-      
-      return [];
     } catch (error) {
       console.error('Erreur fetchProducts:', error);
       throw error;
@@ -132,8 +102,10 @@ export const createProduct = createAsyncThunk(
       // Créer l'entrée de stock si stock_quantity est fourni
       if (productData.stock_quantity !== undefined) {
         console.log('📦 [REDUX DEBUG] Création entrée de stock:', productData.stock_quantity);
-        const stockId = await databaseService.insert('stock', {
+        
+        const stockData = {
           product_id: id,
+          location_id: 'default',
           quantity_current: productData.stock_quantity,
           quantity_min: 0,
           quantity_max: 1000,
@@ -141,36 +113,58 @@ export const createProduct = createAsyncThunk(
           last_movement_type: 'initial',
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
-          sync_status: 'pending',
-        });
-        console.log('✅ [REDUX DEBUG] Stock créé localement:', stockId);
+          sync_status: 'pending' as const,
+        };
         
-        // Synchroniser le stock avec Firebase en arrière-plan si en ligne
+        // Si en ligne, créer d'abord dans Firebase pour obtenir l'ID Firebase
         if (state.network.isConnected) {
-          console.log('🔄 [REDUX DEBUG] Tentative sync stock Firebase en arrière-plan');
-          firebaseService.createStock({
-            product_id: id,
-            quantity_current: productData.stock_quantity,
-            quantity_min: 0,
-            quantity_max: 1000,
-            last_movement_date: new Date().toISOString(),
-            last_movement_type: 'initial',
-          }).then(firebaseStockId => {
-            console.log('✅ [REDUX DEBUG] Sync stock Firebase réussie, ID:', firebaseStockId);
-            // Mettre à jour le statut de sync ET le firebase_id pour le stock
-            databaseService.update('stock', stockId, { 
-              sync_status: 'synced',
-              firebase_id: firebaseStockId 
+          console.log('🔄 [REDUX DEBUG] Mode ONLINE - Création stock Firebase d\'abord');
+          try {
+            const firebaseStockId = await firebaseService.createStock({
+              product_id: id,
+              location_id: 'default',
+              quantity_current: productData.stock_quantity,
+              quantity_min: 0,
+              quantity_max: 1000,
+              last_movement_date: new Date().toISOString(),
+              last_movement_type: 'initial',
+              sync_status: 'synced' as const,
             });
-          }).catch(error => {
-            console.log('⚠️ [REDUX DEBUG] Sync stock Firebase échouée:', error.message);
-            // Ajouter à la queue de sync pour tentative ultérieure
-            databaseService.insert('sync_queue', {
+            console.log('✅ [REDUX DEBUG] Stock créé dans Firebase, ID:', firebaseStockId);
+            
+            // Utiliser l'ID Firebase comme ID local
+            const stockWithFirebaseId = {
+              ...stockData,
+              id: firebaseStockId, // ID Firebase comme ID local
+              firebase_id: firebaseStockId,
+              sync_status: 'synced' as const,
+            };
+            
+            // Insérer dans AsyncStorage avec l'ID Firebase
+            const existing = await AsyncStorage.getItem('stock');
+            const items = existing ? JSON.parse(existing) : [];
+            items.push(stockWithFirebaseId);
+            await AsyncStorage.setItem('stock', JSON.stringify(items));
+            
+            // Invalider le cache
+            databaseService.invalidateCache('stock');
+            
+            console.log('✅ [REDUX DEBUG] Stock créé localement avec ID Firebase:', firebaseStockId);
+          } catch (error: any) {
+            console.log('⚠️ [REDUX DEBUG] Sync stock Firebase échouée, création locale:', error.message);
+            
+            // Si échec Firebase, créer localement avec ID généré
+            const stockId = await databaseService.insert('stock', stockData);
+            console.log('✅ [REDUX DEBUG] Stock créé localement (fallback):', stockId);
+            
+            // Ajouter à la queue de sync
+            await databaseService.insert('sync_queue', {
               table_name: 'stock',
               record_id: stockId,
               operation: 'create',
               data: JSON.stringify({
                 product_id: id,
+                location_id: 'default',
                 quantity_current: productData.stock_quantity,
                 quantity_min: 0,
                 quantity_max: 1000,
@@ -182,16 +176,21 @@ export const createProduct = createAsyncThunk(
               retry_count: 0,
               created_at: new Date().toISOString(),
             });
-          });
+          }
         } else {
-          // Mode offline - ajouter le stock à la queue de sync
-          console.log('📱 [REDUX DEBUG] Mode offline - ajout stock à la queue de synchronisation');
-          databaseService.insert('sync_queue', {
+          // Mode offline - créer localement avec ID généré
+          console.log('📱 [REDUX DEBUG] Mode OFFLINE - Création stock locale');
+          const stockId = await databaseService.insert('stock', stockData);
+          console.log('✅ [REDUX DEBUG] Stock créé localement:', stockId);
+          
+          // Ajouter à la queue de sync
+          await databaseService.insert('sync_queue', {
             table_name: 'stock',
             record_id: stockId,
             operation: 'create',
             data: JSON.stringify({
               product_id: id,
+              location_id: 'default',
               quantity_current: productData.stock_quantity,
               quantity_min: 0,
               quantity_max: 1000,
@@ -212,7 +211,8 @@ export const createProduct = createAsyncThunk(
           // En arrière-plan, essayer de synchroniser avec Firebase
           if (state.network.isConnected) {
             console.log('🔄 [REDUX DEBUG] Tentative sync Firebase en arrière-plan');
-            firebaseService.createProduct(productData).then(firebaseId => {
+            const { stock_quantity, ...productDataForFirebase } = productData;
+            firebaseService.createProduct({ ...productDataForFirebase, sync_status: 'synced' as const }).then(firebaseId => {
               console.log('✅ [REDUX DEBUG] Sync Firebase réussie, ID:', firebaseId);
               // Mettre à jour le statut de sync ET le firebase_id
               databaseService.update('products', id, { 
@@ -281,9 +281,9 @@ export const createProduct = createAsyncThunk(
           }
       
       return createdProduct;
-    } catch (error) {
+    } catch (error: any) {
       console.error('❌ [REDUX DEBUG] Erreur createProduct:', error);
-      console.error('❌ [REDUX DEBUG] Stack trace:', error.stack);
+      console.error('❌ [REDUX DEBUG] Stack trace:', error?.stack);
       throw error;
     }
   }
@@ -449,6 +449,32 @@ export const getProductsByCategory = createAsyncThunk(
   }
 );
 
+export const updateProductStock = createAsyncThunk(
+  'products/updateProductStock',
+  async ({ productId, newStock }: { productId: string; newStock: number }, { dispatch }) => {
+    try {
+      console.log('📦 [REDUX DEBUG] Mise à jour stock produit:', productId, 'nouveau stock:', newStock);
+      
+      // Mettre à jour le stock dans la base de données locale
+      const stockItems = await databaseService.query('SELECT * FROM stock WHERE product_id = ?', [productId]);
+      if (stockItems.length > 0) {
+        const stockItem = stockItems[0] as any;
+        await databaseService.update('stock', stockItem.id, {
+          quantity_current: newStock,
+          last_movement_date: new Date().toISOString(),
+          last_movement_type: 'out',
+        });
+      }
+      
+      // Retourner les données pour mettre à jour le store
+      return { productId, newStock };
+    } catch (error) {
+      console.error('Erreur updateProductStock:', error);
+      throw error;
+    }
+  }
+);
+
 const productSlice = createSlice({
   name: 'products',
   initialState,
@@ -475,7 +501,6 @@ const productSlice = createSlice({
       const product = state.products.find(p => p.id === action.payload);
       if (product) {
         product.sync_status = 'synced';
-        product.sync_timestamp = new Date().toISOString();
       }
     },
     clearError: (state) => {
@@ -487,6 +512,18 @@ const productSlice = createSlice({
       state.error = null;
       state.lastSync = null;
       state.offlineMode = false;
+    },
+    forceStopLoading: (state) => {
+      state.loading = false;
+    },
+    updateStockLocally: (state, action: PayloadAction<{ productId: string; newStock: number }>) => {
+      const { productId, newStock } = action.payload;
+      const product = state.products.find(p => p.id === productId);
+      if (product) {
+        // Mettre à jour le stock dans l'objet produit
+        (product as any).quantity_current = newStock;
+        console.log('📦 [REDUX] Stock mis à jour localement pour', product.name, ':', newStock);
+      }
     },
   },
   extraReducers: (builder) => {
@@ -513,6 +550,16 @@ const productSlice = createSlice({
       .addCase(createProduct.fulfilled, (state, action) => {
         state.loading = false;
         state.products.push(action.payload);
+        
+        // Déclencher une synchronisation automatique du stock après création d'un produit
+        // Cela permet de mettre à jour la page Stock automatiquement
+        setTimeout(() => {
+          console.log('🔄 [AUTO SYNC] Déclenchement synchronisation automatique après création produit');
+          // Import dynamique pour éviter les dépendances circulaires
+          import('../../services/SyncService').then(({ syncService }) => {
+            syncService.startSync();
+          });
+        }, 2000); // Attendre 2 secondes pour que Firebase soit synchronisé
       })
       .addCase(createProduct.rejected, (state, action) => {
         state.loading = false;
@@ -526,9 +573,12 @@ const productSlice = createSlice({
       })
       .addCase(updateProduct.fulfilled, (state, action) => {
         state.loading = false;
-        const index = state.products.findIndex(p => p.id === action.payload.id);
-        if (index !== -1) {
-          state.products[index] = action.payload;
+        if (action.payload && typeof action.payload === 'object' && 'id' in action.payload) {
+          const updatedProduct = action.payload as Product;
+          const index = state.products.findIndex(p => p.id === updatedProduct.id);
+          if (index !== -1) {
+            state.products[index] = updatedProduct;
+          }
         }
       })
       .addCase(updateProduct.rejected, (state, action) => {
@@ -558,6 +608,16 @@ const productSlice = createSlice({
       // getProductsByCategory
       .addCase(getProductsByCategory.fulfilled, (state, action) => {
         state.products = action.payload;
+      })
+      
+      // updateProductStock
+      .addCase(updateProductStock.fulfilled, (state, action) => {
+        const { productId, newStock } = action.payload;
+        const product = state.products.find(p => p.id === productId);
+        if (product) {
+          (product as any).quantity_current = newStock;
+          console.log('📦 [REDUX] Stock mis à jour dans le store pour', product.name, ':', newStock);
+        }
       });
   },
 });
@@ -572,6 +632,8 @@ export const {
   markProductSynced,
   clearError,
   resetProducts,
+  forceStopLoading,
+  updateStockLocally,
 } = productSlice.actions;
 
 export default productSlice.reducer;

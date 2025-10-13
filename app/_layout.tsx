@@ -1,6 +1,6 @@
 import { Icon, Label, NativeTabs } from "expo-router/unstable-native-tabs";
 import React, { useEffect, useState } from 'react';
-import { ActivityIndicator, StatusBar, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, StatusBar, StyleSheet, Text, View } from 'react-native';
 import { Provider } from 'react-redux';
 import { PersistGate } from 'redux-persist/integration/react';
 
@@ -58,20 +58,16 @@ const AppContent: React.FC = () => {
             <Icon sf="square.grid.2x2.fill" drawable="custom_articles_drawable" />
           </NativeTabs.Trigger>
           <NativeTabs.Trigger name="stock">
-            <Label>Stock</Label>
+            <Label>Inventaire</Label>
             <Icon sf="cube.box.fill" drawable="custom_stock_drawable" />
           </NativeTabs.Trigger>
           <NativeTabs.Trigger name="ventes">
             <Label>Ventes</Label>
             <Icon sf="cart.fill" drawable="custom_sales_drawable" />
           </NativeTabs.Trigger>
-          <NativeTabs.Trigger name="profil">
-            <Label>Profil</Label>
-            <Icon sf="person.circle.fill" drawable="custom_profile_drawable" />
-          </NativeTabs.Trigger>
-          <NativeTabs.Trigger name="plus">
-            <Label>Plus</Label>
-            <Icon sf="ellipsis.circle.fill" drawable="custom_plus_drawable" />
+          <NativeTabs.Trigger name="parametres">
+            <Text style={{ fontSize: 10, textAlign: 'center', color: '#666' }}>Paramètres</Text>
+            <Icon sf="gearshape.fill" drawable="custom_settings_drawable" />
           </NativeTabs.Trigger>
         </NativeTabs>
       </View>

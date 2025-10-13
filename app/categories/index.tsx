@@ -1,22 +1,23 @@
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
-  ActivityIndicator,
-  Alert,
-  FlatList,
-  Modal,
-  StyleSheet,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  View,
+    ActivityIndicator,
+    Alert,
+    FlatList,
+    Modal,
+    StyleSheet,
+    Text,
+    TextInput,
+    TouchableOpacity,
+    View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useDispatch, useSelector } from 'react-redux';
 import { ZohoCard } from '../../components/ui/ZohoCard';
 import { AppDispatch, RootState } from '../../store';
 import { Category, createCategory, deleteCategory, fetchCategories, updateCategory } from '../../store/slices/categorySlice';
+import { syncCategoriesToLocal } from '../../utils/syncFirebaseToLocal';
 
 export default function CategoriesScreen() {
   const dispatch = useDispatch<AppDispatch>();
@@ -28,6 +29,7 @@ export default function CategoriesScreen() {
   const [showEditModal, setShowEditModal] = useState(false);
   const [loadingAdd, setLoadingAdd] = useState(false);
   const [loadingDelete, setLoadingDelete] = useState(false);
+  const [loadingSyncFirebase, setLoadingSyncFirebase] = useState(false);
   const [editingCategory, setEditingCategory] = useState<Category | null>(null);
   
   const [newCategory, setNewCategory] = useState({
@@ -135,6 +137,32 @@ export default function CategoriesScreen() {
     setShowEditModal(true);
   };
 
+  const handleSyncFromFirebase = async () => {
+    try {
+      setLoadingSyncFirebase(true);
+      
+      // Synchroniser les catégories depuis Firebase
+      const result = await syncCategoriesToLocal();
+      
+      // Recharger les catégories dans le store Redux
+      await dispatch(fetchCategories());
+      
+      // Afficher le résultat
+      Alert.alert(
+        'Synchronisation réussie !', 
+        `✅ ${result.categoriesAdded} catégories ajoutées\n🔄 ${result.categoriesUpdated} catégories mises à jour\n⏭️ ${result.categoriesSkipped} catégories ignorées\n📊 Total Firebase: ${result.totalCategories}`
+      );
+    } catch (error) {
+      console.error('❌ Erreur synchronisation Firebase:', error);
+      Alert.alert(
+        'Erreur de synchronisation', 
+        error instanceof Error ? error.message : 'Impossible de synchroniser avec Firebase'
+      );
+    } finally {
+      setLoadingSyncFirebase(false);
+    }
+  };
+
   const renderCategory = ({ item }: { item: Category }) => (
     <ZohoCard style={styles.categoryCard}>
       <View style={styles.categoryHeader}>
@@ -195,12 +223,25 @@ export default function CategoriesScreen() {
           <Text style={styles.title}>Catégories</Text>
           <Text style={styles.subtitle}>Gérez vos catégories</Text>
         </View>
-        <TouchableOpacity
-          style={styles.addButton}
-          onPress={() => setShowAddModal(true)}
-        >
-          <Text style={styles.addButtonText}>+</Text>
-        </TouchableOpacity>
+        <View style={styles.headerActions}>
+          <TouchableOpacity
+            style={[styles.syncButton, loadingSyncFirebase && styles.syncButtonDisabled]}
+            onPress={handleSyncFromFirebase}
+            disabled={loadingSyncFirebase}
+          >
+            <Ionicons 
+              name={loadingSyncFirebase ? "hourglass-outline" : "cloud-download-outline"} 
+              size={24} 
+              color="#fff" 
+            />
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.addButton}
+            onPress={() => setShowAddModal(true)}
+          >
+            <Text style={styles.addButtonText}>+</Text>
+          </TouchableOpacity>
+        </View>
       </View>
 
       {/* Liste des catégories */}
@@ -422,6 +463,23 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#666',
     marginTop: 2,
+  },
+  headerActions: {
+    flexDirection: 'row',
+    gap: 8,
+    alignItems: 'center',
+  },
+  syncButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#34C759',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  syncButtonDisabled: {
+    backgroundColor: '#A8A8A8',
+    opacity: 0.6,
   },
   addButton: {
     width: 40,

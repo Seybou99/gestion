@@ -32,7 +32,6 @@ const phoneFormats: { [key: string]: RegExp } = {
   'BI': /^(\+257|0)\d{8}$/, // Burundi
   'CM': /^(\+237|0)[67]\d{8}$/, // Cameroun
   'CF': /^(\+236|0)\d{8}$/, // République centrafricaine
-  'TD': /^(\+235|0)\d{8}$/, // Tchad
   'CG': /^(\+242|0)\d{8}$/, // Congo
   'CD': /^(\+243|0)\d{8}$/, // République démocratique du Congo
   'CI': /^(\+225|0)[67]\d{7}$/, // Côte d'Ivoire

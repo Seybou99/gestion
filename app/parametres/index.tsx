@@ -1,4 +1,3 @@
-import { Ionicons } from '@expo/vector-icons';
 import React from 'react';
 import {
     Alert,
@@ -14,16 +13,18 @@ import { NetworkTestButton } from '../../components/NetworkTestButton';
 import { useAuth } from '../../contexts/AuthContext';
 
 /**
- * Écran Plus - Paramètres et Fonctionnalités Avancées
+ * Écran Paramètres - Configuration de l'application
  * 
- * Contient les paramètres, informations de l'app,
- * et fonctionnalités supplémentaires.
+ * Contient les paramètres de l'application, préférences utilisateur,
+ * et options de configuration.
  */
-export default function PlusScreen() {
+export default function ParametresScreen() {
   const { user, logout } = useAuth();
   const [notificationsEnabled, setNotificationsEnabled] = React.useState(true);
   const [darkModeEnabled, setDarkModeEnabled] = React.useState(false);
   const [autoSyncEnabled, setAutoSyncEnabled] = React.useState(true);
+  const [soundEnabled, setSoundEnabled] = React.useState(true);
+  const [vibrationEnabled, setVibrationEnabled] = React.useState(true);
 
   const handleLogout = () => {
     Alert.alert(
@@ -37,7 +38,6 @@ export default function PlusScreen() {
           onPress: async () => {
             try {
               await logout();
-              // La redirection se fait automatiquement via le contexte AuthContext
             } catch (error) {
               console.error('Erreur lors de la déconnexion:', error);
               Alert.alert('Erreur', 'Une erreur est survenue lors de la déconnexion');
@@ -48,24 +48,24 @@ export default function PlusScreen() {
     );
   };
 
-  const handleClearCache = () => {
+  const handleResetSettings = () => {
     Alert.alert(
-      'Vider le cache',
-      'Cette action supprimera les données temporaires. Continuer ?',
+      'Réinitialiser les paramètres',
+      'Cette action remettra tous les paramètres à leurs valeurs par défaut. Continuer ?',
       [
         { text: 'Annuler', style: 'cancel' },
-        { text: 'Vider', style: 'destructive', onPress: () => console.log('Clear cache') },
-      ]
-    );
-  };
-
-  const handleExportData = () => {
-    Alert.alert(
-      'Exporter les données',
-      'Vos données seront exportées au format CSV.',
-      [
-        { text: 'Annuler', style: 'cancel' },
-        { text: 'Exporter', onPress: () => console.log('Export data') },
+        { 
+          text: 'Réinitialiser', 
+          style: 'destructive', 
+          onPress: () => {
+            setNotificationsEnabled(true);
+            setDarkModeEnabled(false);
+            setAutoSyncEnabled(true);
+            setSoundEnabled(true);
+            setVibrationEnabled(true);
+            Alert.alert('Succès', 'Paramètres réinitialisés');
+          }
+        },
       ]
     );
   };
@@ -78,7 +78,7 @@ export default function PlusScreen() {
   );
 
   const renderSettingItem = (
-    icon: string,
+    icon: React.ReactNode,
     title: string,
     subtitle: string,
     onPress: () => void,
@@ -86,7 +86,9 @@ export default function PlusScreen() {
   ) => (
     <TouchableOpacity style={styles.settingItem} onPress={onPress}>
       <View style={styles.settingLeft}>
-        <Text style={styles.settingIcon}>{icon}</Text>
+        <View style={styles.settingIconContainer}>
+          {typeof icon === 'string' ? <Text style={styles.settingIcon}>{icon}</Text> : icon}
+        </View>
         <View style={styles.settingText}>
           <Text style={styles.settingTitle}>{title}</Text>
           <Text style={styles.settingSubtitle}>{subtitle}</Text>
@@ -97,7 +99,7 @@ export default function PlusScreen() {
   );
 
   const renderSwitchItem = (
-    icon: string,
+    icon: React.ReactNode,
     title: string,
     subtitle: string,
     value: boolean,
@@ -105,7 +107,9 @@ export default function PlusScreen() {
   ) => (
     <View style={styles.settingItem}>
       <View style={styles.settingLeft}>
-        <Text style={styles.settingIcon}>{icon}</Text>
+        <View style={styles.settingIconContainer}>
+          {typeof icon === 'string' ? <Text style={styles.settingIcon}>{icon}</Text> : icon}
+        </View>
         <View style={styles.settingText}>
           <Text style={styles.settingTitle}>{title}</Text>
           <Text style={styles.settingSubtitle}>{subtitle}</Text>
@@ -124,35 +128,24 @@ export default function PlusScreen() {
     <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
       {/* Header */}
       <View style={styles.header}>
-        <Text style={styles.title}>Plus</Text>
-        <Text style={styles.subtitle}>Paramètres et fonctionnalités</Text>
+        <Text style={styles.title}>Paramètres</Text>
+        <Text style={styles.subtitle}>Configurez votre application</Text>
       </View>
 
       {/* Profil utilisateur */}
       <View style={styles.profileSection}>
         <View style={styles.profileAvatar}>
-          <Text style={styles.avatarText}>👤</Text>
+          <Text style={styles.avatarText}>⚙️</Text>
         </View>
         <View style={styles.profileInfo}>
           <Text style={styles.profileName}>
             {user?.firstName && user?.lastName 
               ? `${user.firstName} ${user.lastName}` 
-              : 'Utilisateur Connecté'
+              : 'Utilisateur'
             }
           </Text>
           <Text style={styles.profileEmail}>{user?.email || 'user@example.com'}</Text>
         </View>
-        <TouchableOpacity 
-          style={styles.editButton}
-          onPress={() => {
-            // Navigation vers l'écran de profil
-            // Note: Avec Expo Router, la navigation se fait automatiquement
-            // quand on clique sur l'onglet "profil" dans la navigation
-            console.log('Redirection vers le profil via navigation');
-          }}
-        >
-          <Text style={styles.editButtonText}>Modifier</Text>
-        </TouchableOpacity>
       </View>
 
       {/* Paramètres généraux */}
@@ -173,11 +166,18 @@ export default function PlusScreen() {
             setDarkModeEnabled
           )}
           {renderSwitchItem(
-            '🔄',
-            'Synchronisation automatique',
-            'Synchroniser les données en arrière-plan',
-            autoSyncEnabled,
-            setAutoSyncEnabled
+            '🔊',
+            'Sons',
+            'Activer les sons de l\'application',
+            soundEnabled,
+            setSoundEnabled
+          )}
+          {renderSwitchItem(
+            '📳',
+            'Vibrations',
+            'Activer les vibrations',
+            vibrationEnabled,
+            setVibrationEnabled
           )}
         </>
       ))}
@@ -185,31 +185,54 @@ export default function PlusScreen() {
       {/* Synchronisation */}
       {renderSettingsSection('Synchronisation', (
         <View style={styles.syncSection}>
-          <NetworkTestButton style={styles.syncButton} />
-          <CompleteSyncButton style={styles.syncButton} />
-        </View>
-      ))}
-
-      {/* Gestion des données */}
-      {renderSettingsSection('Données', (
-        <>
-          {renderSettingItem(
-            '📤',
-            'Exporter les données',
-            'Exporter vos données au format CSV',
-            handleExportData
+          {renderSwitchItem(
+            '🔄',
+            'Synchronisation automatique',
+            'Synchroniser les données en arrière-plan',
+            autoSyncEnabled,
+            setAutoSyncEnabled
           )}
           {renderSettingItem(
-            <Ionicons name="trash-outline" size={20} color="#FF3B30" />,
-            'Vider le cache',
-            'Supprimer les données temporaires',
-            handleClearCache
+            '📡',
+            'Fréquence de synchronisation',
+            'Choisir la fréquence de sync',
+            () => Alert.alert('Fréquence', 'Options de fréquence à implémenter')
           )}
           {renderSettingItem(
             '📊',
-            'Statistiques détaillées',
-            'Voir les statistiques avancées',
-            () => console.log('Statistics')
+            'Données hors ligne',
+            'Gérer le cache local',
+            () => Alert.alert('Cache', 'Gestion du cache à implémenter')
+          )}
+          
+          {/* Boutons de synchronisation */}
+          <View style={styles.syncButtonsContainer}>
+            <NetworkTestButton style={styles.syncButton} />
+            <CompleteSyncButton style={styles.syncButton} />
+          </View>
+        </View>
+      ))}
+
+      {/* Interface */}
+      {renderSettingsSection('Interface', (
+        <>
+          {renderSettingItem(
+            '🎨',
+            'Thème de l\'application',
+            'Personnaliser l\'apparence',
+            () => Alert.alert('Thème', 'Sélecteur de thème à implémenter')
+          )}
+          {renderSettingItem(
+            '📱',
+            'Taille du texte',
+            'Ajuster la taille des polices',
+            () => Alert.alert('Texte', 'Réglage de la taille à implémenter')
+          )}
+          {renderSettingItem(
+            '🌍',
+            'Langue',
+            'Choisir la langue de l\'application',
+            () => Alert.alert('Langue', 'Sélecteur de langue à implémenter')
           )}
         </>
       ))}
@@ -221,73 +244,29 @@ export default function PlusScreen() {
             '🔐',
             'Changer le mot de passe',
             'Modifier votre mot de passe',
-            () => console.log('Change password')
+            () => Alert.alert('Mot de passe', 'Changement de mot de passe à implémenter')
           )}
           {renderSettingItem(
             '🔑',
             'Authentification à deux facteurs',
             'Activer la 2FA',
-            () => console.log('2FA')
+            () => Alert.alert('2FA', 'Configuration 2FA à implémenter')
           )}
           {renderSettingItem(
             '📱',
             'Appareils connectés',
             'Gérer les appareils autorisés',
-            () => console.log('Devices')
-          )}
-        </>
-      ))}
-
-      {/* Support */}
-      {renderSettingsSection('Support', (
-        <>
-          {renderSettingItem(
-            '❓',
-            'Centre d\'aide',
-            'FAQ et guides d\'utilisation',
-            () => console.log('Help')
-          )}
-          {renderSettingItem(
-            '📞',
-            'Nous contacter',
-            'Support technique et suggestions',
-            () => console.log('Contact')
-          )}
-          {renderSettingItem(
-            '⭐',
-            'Évaluer l\'application',
-            'Donner votre avis sur l\'App Store',
-            () => console.log('Rate app')
-          )}
-        </>
-      ))}
-
-      {/* Informations */}
-      {renderSettingsSection('Informations', (
-        <>
-          {renderSettingItem(
-            'ℹ️',
-            'À propos',
-            'Version 1.0.0 - Informations légales',
-            () => console.log('About')
-          )}
-          {renderSettingItem(
-            '📋',
-            'Conditions d\'utilisation',
-            'Lire les CGU',
-            () => console.log('Terms')
-          )}
-          {renderSettingItem(
-            '🔒',
-            'Politique de confidentialité',
-            'Comment nous protégeons vos données',
-            () => console.log('Privacy')
+            () => Alert.alert('Appareils', 'Gestion des appareils à implémenter')
           )}
         </>
       ))}
 
       {/* Actions importantes */}
       <View style={styles.actionsSection}>
+        <TouchableOpacity style={styles.resetButton} onPress={handleResetSettings}>
+          <Text style={styles.resetButtonText}>Réinitialiser les paramètres</Text>
+        </TouchableOpacity>
+        
         <TouchableOpacity style={styles.logoutButton} onPress={handleLogout}>
           <Text style={styles.logoutButtonText}>Se déconnecter</Text>
         </TouchableOpacity>
@@ -297,9 +276,6 @@ export default function PlusScreen() {
       <View style={styles.footer}>
         <Text style={styles.footerText}>
           Version 1.0.0 • Dernière mise à jour : {new Date().toLocaleDateString('fr-FR')}
-        </Text>
-        <Text style={styles.footerText}>
-          © 2024 Mon Application. Tous droits réservés.
         </Text>
       </View>
     </ScrollView>
@@ -358,7 +334,6 @@ const styles = StyleSheet.create({
   },
   avatarText: {
     fontSize: 24,
-    color: '#fff',
   },
   profileInfo: {
     flex: 1,
@@ -372,17 +347,6 @@ const styles = StyleSheet.create({
   profileEmail: {
     fontSize: 14,
     color: '#666',
-  },
-  editButton: {
-    backgroundColor: '#f0f0f0',
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 8,
-  },
-  editButtonText: {
-    fontSize: 14,
-    color: '#007AFF',
-    fontWeight: '600',
   },
   section: {
     marginTop: 20,
@@ -413,10 +377,14 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     flex: 1,
   },
-  settingIcon: {
-    fontSize: 24,
+  settingIconContainer: {
     marginRight: 16,
     width: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  settingIcon: {
+    fontSize: 24,
     textAlign: 'center',
   },
   settingText: {
@@ -441,6 +409,18 @@ const styles = StyleSheet.create({
     marginTop: 30,
     marginHorizontal: 20,
     marginBottom: 20,
+    gap: 12,
+  },
+  resetButton: {
+    backgroundColor: '#FF9500',
+    borderRadius: 12,
+    padding: 16,
+    alignItems: 'center',
+  },
+  resetButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
   },
   logoutButton: {
     backgroundColor: '#FF3B30',
@@ -464,6 +444,10 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   syncSection: {
+    gap: 8,
+  },
+  syncButtonsContainer: {
+    marginTop: 16,
     gap: 8,
   },
   syncButton: {

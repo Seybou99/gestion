@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -16,14 +16,42 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useDispatch, useSelector } from 'react-redux';
+import { QRScanner } from '../../components/QRScanner';
 import { ZohoButton } from '../../components/ui/ZohoButton';
 import { ZohoCard } from '../../components/ui/ZohoCard';
 import { databaseService } from '../../services/DatabaseService';
 import { AppDispatch, RootState } from '../../store';
 import { Category, createCategory, deleteCategory, fetchCategories, updateCategory } from '../../store/slices/categorySlice';
-import { createProduct, fetchProducts, setSearchQuery, setSelectedCategory } from '../../store/slices/productSlice';
+import { createProduct, fetchProducts, forceStopLoading, setSearchQuery, setSelectedCategory } from '../../store/slices/productSlice';
+import { checkProductExists, cleanDuplicateProducts, syncFirebaseToLocalSafe } from '../../utils/duplicatePrevention';
 
-const { width } = Dimensions.get('window');
+const { width, height } = Dimensions.get('window');
+
+// Breakpoints responsive
+const isTablet = width > 768;
+const isDesktop = width > 1024;
+const isLargeScreen = width > 1200;
+
+// Tailles dynamiques basées sur la largeur d'écran
+const dynamicSizes = {
+  fontSize: {
+    small: Math.max(12, width * 0.03),
+    medium: Math.max(14, width * 0.035),
+    large: Math.max(16, width * 0.04),
+    xlarge: Math.max(18, width * 0.045),
+  },
+  spacing: {
+    xs: Math.max(4, width * 0.01),
+    sm: Math.max(8, width * 0.02),
+    md: Math.max(12, width * 0.03),
+    lg: Math.max(16, width * 0.04),
+    xl: Math.max(20, width * 0.05),
+  },
+  button: {
+    size: Math.max(40, width * 0.1),
+    padding: Math.max(8, width * 0.02),
+  }
+};
 
 /**
  * Écran Articles - Gestion des Articles avec Redux et SQLite
@@ -55,6 +83,8 @@ export default function ArticlesScreen() {
     selectedCategory 
   } = useSelector((state: RootState) => state.products);
   const { isConnected = true } = useSelector((state: RootState) => state.network);
+  // Utiliser le store Redux des catégories au lieu de l'état local
+  const { categories: reduxCategories } = useSelector((state: RootState) => state.categories);
 
 
   const [showAddModal, setShowAddModal] = useState(false);
@@ -69,10 +99,10 @@ export default function ArticlesScreen() {
     unit: 'pcs',
     stock_quantity: 0,
   });
-  const [categories, setCategories] = useState<any[]>([]);
   const [loadingAdd, setLoadingAdd] = useState(false);
   const [showCategoriesModal, setShowCategoriesModal] = useState(false);
   const [showSearchBar, setShowSearchBar] = useState(false);
+  const [showQRScanner, setShowQRScanner] = useState(false);
 
   // États pour le modal des catégories
   const [modalCategories, setModalCategories] = useState<Category[]>([]);
@@ -100,10 +130,17 @@ export default function ArticlesScreen() {
   ];
 
 
+  // Créer la liste des catégories avec "Tous" en premier
+  const categories = [
+    { id: 'all', name: 'Tous' },
+    ...reduxCategories
+  ];
+
   // Charger les produits et catégories au démarrage
   useEffect(() => {
-    loadData();
-  }, []);
+    dispatch(fetchProducts());
+    dispatch(fetchCategories());
+  }, [dispatch]);
 
   // Charger les catégories quand le modal s'ouvre
   useEffect(() => {
@@ -111,36 +148,6 @@ export default function ArticlesScreen() {
       loadModalCategories();
     }
   }, [showCategoriesModal]);
-
-  const loadData = async () => {
-    
-    // Charger les catégories en parallèle (plus rapide)
-    const loadCategories = async () => {
-      try {
-        const categoriesData = await databaseService.getAll('categories');
-        setCategories([
-          { id: 'all', name: 'Tous' },
-          ...categoriesData
-        ]);
-      } catch (error) {
-        console.error('Erreur chargement catégories:', error);
-        setCategories([
-          { id: 'all', name: 'Tous' },
-          { id: 'cat1', name: 'Électronique' },
-          { id: 'cat2', name: 'Vêtements' },
-          { id: 'cat3', name: 'Alimentation' },
-          { id: 'cat4', name: 'Maison' },
-        ]);
-      }
-    };
-
-    // Charger catégories et produits en parallèle
-    await Promise.all([
-      dispatch(fetchProducts()),
-      loadCategories()
-    ]);
-    
-  };
 
   // Filtrer les produits selon la recherche et la catégorie
   const filteredProducts = products.filter(product => {
@@ -245,6 +252,42 @@ export default function ArticlesScreen() {
     try {
       setLoadingAdd(true);
       
+      // Vérifier les doublons avant création
+      const duplicateCheck = await checkProductExists({
+        sku: newProduct.sku,
+        name: newProduct.name,
+        barcode: newProduct.barcode
+      });
+      
+      if (duplicateCheck.exists) {
+        Alert.alert(
+          'Produit déjà existant',
+          `Un produit avec ce ${duplicateCheck.reason?.toLowerCase()} existe déjà : "${duplicateCheck.existingProduct?.name}"`,
+          [
+            { text: 'Annuler', style: 'cancel' },
+            { 
+              text: 'Créer quand même', 
+              onPress: async () => {
+                await createProductAction();
+              }
+            }
+          ]
+        );
+        return;
+      }
+      
+      await createProductAction();
+      
+    } catch (error) {
+      console.error('Erreur handleAddProduct:', error);
+      Alert.alert('Erreur', 'Impossible de créer le produit');
+    } finally {
+      setLoadingAdd(false);
+    }
+  };
+
+  const createProductAction = async () => {
+    try {
       // Utiliser Redux pour créer le produit (gère la sync automatiquement)
       const result = await dispatch(createProduct({
         name: newProduct.name,
@@ -260,7 +303,7 @@ export default function ArticlesScreen() {
         is_active: true,
         stock_quantity: newProduct.stock_quantity, // Passer la quantité de stock
       }));
-      
+        
       // Réinitialiser le formulaire
       setNewProduct({
         name: '',
@@ -279,8 +322,6 @@ export default function ArticlesScreen() {
       
     } catch (error) {
       Alert.alert('Erreur', `Impossible d'ajouter le produit: ${error instanceof Error ? error.message : 'Erreur inconnue'}`);
-    } finally {
-      setLoadingAdd(false);
     }
   };
 
@@ -309,19 +350,6 @@ export default function ArticlesScreen() {
 
 
   // ===== FONCTIONS POUR LA GESTION DES CATÉGORIES =====
-
-  // Fonction pour recharger les catégories du sélecteur de création de produit
-  const reloadCategoriesSelector = async () => {
-    try {
-      const categoriesData = await databaseService.getAll('categories');
-      setCategories([
-        { id: 'all', name: 'Tous' },
-        ...categoriesData
-      ]);
-    } catch (error) {
-      console.error('Erreur rechargement sélecteur catégories:', error);
-    }
-  };
 
   const loadModalCategories = async () => {
     try {
@@ -362,7 +390,7 @@ export default function ArticlesScreen() {
       
       setShowAddCategoryModal(false);
       await loadModalCategories(); // Recharger les catégories du modal
-      await reloadCategoriesSelector(); // Recharger le sélecteur de création de produit
+      // Les catégories sont automatiquement mises à jour depuis Redux
       Alert.alert('Succès', 'Catégorie ajoutée avec succès !');
       // Revenir au modal principal des catégories
       setTimeout(() => {
@@ -428,7 +456,7 @@ export default function ArticlesScreen() {
       
       await dispatch(deleteCategory(category.id));
       await loadModalCategories(); // Recharger les catégories du modal
-      await reloadCategoriesSelector(); // Recharger le sélecteur de création de produit
+      // Les catégories sont automatiquement mises à jour depuis Redux
       Alert.alert('Succès', `Catégorie "${category.name}" supprimée avec succès`);
     } catch (error) {
       Alert.alert('Erreur', `Impossible de supprimer la catégorie: ${error instanceof Error ? error.message : 'Erreur inconnue'}`);
@@ -466,18 +494,140 @@ export default function ArticlesScreen() {
     </TouchableOpacity>
   );
 
+  // Fonction pour synchroniser Firebase → Local (sans doublons)
+  const handleSyncFromFirebase = async () => {
+    try {
+      Alert.alert(
+        'Synchronisation Complète',
+        'Que voulez-vous faire ?',
+        [
+          { text: 'Annuler', style: 'cancel' },
+          {
+            text: 'Nettoyer Doublons',
+            onPress: async () => {
+              try {
+                const result = await cleanDuplicateProducts();
+                await dispatch(fetchProducts());
+                Alert.alert(
+                  'Nettoyage Terminé ! 🧹',
+                  `${result.duplicatesFound} doublons trouvés\n${result.duplicatesRemoved} doublons supprimés`
+                );
+              } catch (error) {
+                console.error('Erreur nettoyage doublons:', error);
+                Alert.alert('Erreur', 'Impossible de nettoyer les doublons');
+              }
+            },
+          },
+          {
+            text: 'Télécharger Firebase',
+            onPress: async () => {
+              try {
+                const result = await syncFirebaseToLocalSafe();
+                await dispatch(fetchProducts());
+                Alert.alert(
+                  'Synchronisation Terminée ! 🎉',
+                  `${result.productsDownloaded} nouveaux produits téléchargés\n${result.stocksDownloaded} nouveaux stocks téléchargés\n${result.duplicatesSkipped} doublons évités\n\nTotal: ${result.totalProducts} produits, ${result.totalStocks} stocks`
+                );
+              } catch (error) {
+                console.error('Erreur sync Firebase → Local:', error);
+                Alert.alert('Erreur', 'Impossible de télécharger depuis Firebase');
+              }
+            },
+          },
+        ]
+      );
+    } catch (error) {
+      console.error('Erreur handleSyncFromFirebase:', error);
+    }
+  };
+
+  // Fonction pour gérer le scan QR
+  const handleQRScan = (data: string) => {
+    console.log('🔍 QR Code scanné:', data);
+    
+    // Fermer le scanner
+    setShowQRScanner(false);
+    
+    // Analyser le contenu du QR Code
+    try {
+      let productData;
+      
+      // Gérer le double encodage JSON si nécessaire
+      try {
+        productData = JSON.parse(data);
+        // Si c'est encore une chaîne JSON, parser une deuxième fois
+        if (typeof productData === 'string') {
+          productData = JSON.parse(productData);
+        }
+      } catch {
+        // Si ce n'est pas du JSON, traiter comme un simple code-barres
+        productData = { barcode: data };
+      }
+      
+      if (productData.name && productData.price) {
+        // Pré-remplir le formulaire avec les données du QR Code
+        setNewProduct({
+          ...newProduct,
+          name: productData.name,
+          price_sell: productData.price,
+          description: productData.description || '',
+          sku: productData.sku || '',
+          barcode: productData.barcode || data,
+        });
+        
+        Alert.alert(
+          'Produit détecté',
+          `Nom: ${productData.name}\nPrix: ${productData.price} FCFA`,
+          [
+            { text: 'Annuler', style: 'cancel' },
+            { text: 'Ajouter', onPress: () => setShowAddModal(true) }
+          ]
+        );
+      }
+    } catch (error) {
+      // Si ce n'est pas un JSON, traiter comme un simple texte
+      Alert.alert(
+        'Code scanné',
+        `Contenu: ${data}`,
+        [
+          { text: 'OK', style: 'default' },
+          { 
+            text: 'Utiliser comme nom', 
+            onPress: () => {
+              setNewProduct({ ...newProduct, name: data });
+              setShowAddModal(true);
+            }
+          }
+        ]
+      );
+    }
+  };
+
   const shouldShowLoading = loading && products.length === 0 && !loadingAdd && !offlineMode;
   
   // Timeout pour éviter que le spinner reste figé
   useEffect(() => {
     if (shouldShowLoading) {
       const timeout = setTimeout(() => {
-        console.log('⚠️ Timeout du spinner - Forçage de l\'affichage des produits');
-      }, 10000); // 10 secondes max
+        // Forcer le rechargement des produits si le spinner reste figé
+        dispatch(fetchProducts());
+      }, 3000); // 3 secondes max
       
       return () => clearTimeout(timeout);
     }
-  }, [shouldShowLoading]);
+  }, [shouldShowLoading, dispatch]);
+
+  // Gestion supplémentaire : s'assurer que loading se remet à false
+  useEffect(() => {
+    if (loading && products.length > 0) {
+      // Si on a des produits mais loading est encore true, forcer le reset
+      const timeout = setTimeout(() => {
+        dispatch(forceStopLoading());
+      }, 1000);
+      
+      return () => clearTimeout(timeout);
+    }
+  }, [loading, products.length, dispatch]);
 
 
   if (shouldShowLoading) {
@@ -509,15 +659,22 @@ export default function ArticlesScreen() {
         
         {/* Icônes d'action */}
         <View style={styles.headerActions}>
+          {/* Icône téléchargement Firebase (temporaire) */}
+          <TouchableOpacity 
+            style={styles.headerIcon}
+            onPress={handleSyncFromFirebase}
+          >
+            <Ionicons name="cloud-download-outline" size={dynamicSizes.fontSize.large} color="#34C759" />
+          </TouchableOpacity>
+          
           {/* Icône scanner code-barres */}
           <TouchableOpacity 
             style={styles.headerIcon}
             onPress={() => {
-              // TODO: Implémenter le scanner de code-barres
-              Alert.alert('Scanner', 'Fonctionnalité de scan de code-barres à implémenter');
+              setShowQRScanner(true);
             }}
           >
-            <Ionicons name="barcode-outline" size={22} color="#007AFF" />
+            <Ionicons name="barcode-outline" size={dynamicSizes.fontSize.large} color="#007AFF" />
           </TouchableOpacity>
           
           {/* Icône recherche */}
@@ -527,7 +684,7 @@ export default function ArticlesScreen() {
               setShowSearchBar(!showSearchBar);
             }}
           >
-            <Ionicons name="search-outline" size={22} color="#007AFF" />
+            <Ionicons name="search-outline" size={dynamicSizes.fontSize.large} color="#007AFF" />
           </TouchableOpacity>
         </View>
       </View>
@@ -628,8 +785,11 @@ export default function ArticlesScreen() {
           styles.articlesContent,
           { paddingBottom: 100 + insets.bottom }
         ]}
-        refreshing={loading && !offlineMode}
+        refreshing={false}
         onRefresh={offlineMode ? undefined : () => dispatch(fetchProducts())}
+        numColumns={isLargeScreen ? 2 : 1}
+        columnWrapperStyle={isLargeScreen ? styles.articleRow : undefined}
+        key={isLargeScreen ? 2 : 1}
         ListEmptyComponent={() => (
           <View style={styles.emptyContainer}>
             <Text style={styles.emptyText}>
@@ -661,10 +821,10 @@ export default function ArticlesScreen() {
         ]}
         onPress={() => {
           setShowAddModal(true);
-          reloadCategoriesSelector(); // Recharger les catégories quand on ouvre le modal de création
+          // Les catégories sont automatiquement disponibles depuis Redux
         }}
       >
-        <Ionicons name="add" size={24} color="#fff" />
+        <Ionicons name="add" size={dynamicSizes.fontSize.xlarge} color="#fff" />
       </TouchableOpacity>
 
       {/* Modal d'ajout de produit */}
@@ -1075,6 +1235,20 @@ export default function ArticlesScreen() {
           </ScrollView>
         </View>
       </Modal>
+
+      {/* Modal QR Scanner */}
+      <Modal
+        visible={showQRScanner}
+        animationType="slide"
+        presentationStyle="fullScreen"
+      >
+        <QRScanner
+          onScan={handleQRScan}
+          onClose={() => setShowQRScanner(false)}
+          title="Scanner QR Code"
+          subtitle="Scannez un code QR pour ajouter un produit"
+        />
+      </Modal>
     </View>
   );
 }
@@ -1152,9 +1326,9 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   headerIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: dynamicSizes.button.size,
+    height: dynamicSizes.button.size,
+    borderRadius: dynamicSizes.button.size / 2,
     backgroundColor: '#f8f9fa',
     justifyContent: 'center',
     alignItems: 'center',
@@ -1165,10 +1339,10 @@ const styles = StyleSheet.create({
     elevation: 2,
   },
   headerIconText: {
-    fontSize: 18,
+    fontSize: dynamicSizes.fontSize.xlarge,
   },
   title: {
-    fontSize: 28,
+    fontSize: dynamicSizes.fontSize.xlarge + 10,
     fontWeight: 'bold',
     color: '#1a1a1a',
   },
@@ -1284,53 +1458,59 @@ const styles = StyleSheet.create({
   },
   articlesList: {
     flex: 1,
-    marginTop: 20,
+    marginTop: dynamicSizes.spacing.xl,
   },
   articlesContent: {
-    paddingHorizontal: 20,
+    paddingHorizontal: dynamicSizes.spacing.xl,
     paddingBottom: 100,
   },
+  articleRow: {
+    justifyContent: 'space-between',
+    paddingHorizontal: dynamicSizes.spacing.xs,
+  },
   articleCard: {
-    marginBottom: 12,
+    marginBottom: dynamicSizes.spacing.md,
+    flex: isLargeScreen ? 1 : undefined,
+    marginHorizontal: isLargeScreen ? dynamicSizes.spacing.xs : 0,
   },
   articleHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 12,
+    marginBottom: dynamicSizes.spacing.md,
   },
   articleImage: {
-    fontSize: 32,
-    marginRight: 12,
+    fontSize: isTablet ? 36 : 32,
+    marginRight: dynamicSizes.spacing.md,
   },
   articleInfo: {
     flex: 1,
   },
   articleName: {
-    fontSize: 16,
+    fontSize: dynamicSizes.fontSize.large,
     fontWeight: '600',
     color: '#1a1a1a',
-    marginBottom: 2,
+    marginBottom: dynamicSizes.spacing.xs,
   },
   articleSku: {
-    fontSize: 12,
+    fontSize: dynamicSizes.fontSize.small,
     color: '#666',
   },
   articlePrice: {
     backgroundColor: '#f0f8ff',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
+    paddingHorizontal: dynamicSizes.spacing.md,
+    paddingVertical: dynamicSizes.spacing.xs,
     borderRadius: 8,
   },
   priceText: {
-    fontSize: 16,
+    fontSize: dynamicSizes.fontSize.large,
     fontWeight: 'bold',
     color: '#007AFF',
   },
   articleDescription: {
-    fontSize: 14,
+    fontSize: dynamicSizes.fontSize.medium,
     color: '#666',
-    lineHeight: 20,
-    marginBottom: 12,
+    lineHeight: dynamicSizes.fontSize.medium + 6,
+    marginBottom: dynamicSizes.spacing.md,
   },
   articleFooter: {
     flexDirection: 'row',
@@ -1358,10 +1538,10 @@ const styles = StyleSheet.create({
   },
   fabButton: {
     position: 'absolute',
-    right: 20,
-    width: 48,
-    height: 48,
-    borderRadius: 24,
+    right: dynamicSizes.spacing.xl,
+    width: dynamicSizes.button.size + 8,
+    height: dynamicSizes.button.size + 8,
+    borderRadius: (dynamicSizes.button.size + 8) / 2,
     backgroundColor: '#007AFF',
     justifyContent: 'center',
     alignItems: 'center',
@@ -1372,7 +1552,7 @@ const styles = StyleSheet.create({
     elevation: 8,
   },
   fabText: {
-    fontSize: 20,
+    fontSize: dynamicSizes.fontSize.xlarge + 2,
     color: '#fff',
     fontWeight: '300',
   },

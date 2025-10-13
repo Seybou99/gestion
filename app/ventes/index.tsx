@@ -1,24 +1,53 @@
 import { Ionicons } from '@expo/vector-icons';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import React, { useEffect, useState } from 'react';
 import {
-    ActivityIndicator,
-    Alert,
-    Dimensions,
-    FlatList,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View,
+  ActivityIndicator,
+  Alert,
+  Dimensions,
+  FlatList,
+  Modal,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from 'react-native';
 import { useDispatch, useSelector } from 'react-redux';
-import { ZohoButton } from '../../components/ui/ZohoButton';
+import { QRScanner } from '../../components/QRScanner';
 import { databaseService } from '../../services/DatabaseService';
+import { syncService } from '../../services/SyncService';
 import { AppDispatch, RootState } from '../../store';
-import { fetchProducts } from '../../store/slices/productSlice';
+import { fetchProducts, updateStockLocally } from '../../store/slices/productSlice';
 
-const { width } = Dimensions.get('window');
+const { width, height } = Dimensions.get('window');
+
+// Breakpoints responsive
+const isTablet = width > 768;
+const isDesktop = width > 1024;
+const isLargeScreen = width > 1200;
+
+// Tailles dynamiques basées sur la largeur d'écran
+const dynamicSizes = {
+  fontSize: {
+    small: Math.max(12, width * 0.03),
+    medium: Math.max(14, width * 0.035),
+    large: Math.max(16, width * 0.04),
+    xlarge: Math.max(18, width * 0.045),
+  },
+  spacing: {
+    xs: Math.max(4, width * 0.01),
+    sm: Math.max(8, width * 0.02),
+    md: Math.max(12, width * 0.03),
+    lg: Math.max(16, width * 0.04),
+    xl: Math.max(20, width * 0.05),
+  },
+  button: {
+    size: Math.max(24, width * 0.06),
+    padding: Math.max(8, width * 0.02),
+  }
+};
 
 interface CartItem {
   id: string;
@@ -45,6 +74,8 @@ interface Customer {
 export default function VentesScreen() {
   const dispatch = useDispatch<AppDispatch>();
   const { products } = useSelector((state: RootState) => state.products);
+  const { user } = useSelector((state: RootState) => state.auth);
+  const { isConnected } = useSelector((state: RootState) => state.network);
   
   const [cart, setCart] = useState<CartItem[]>([]);
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
@@ -52,21 +83,95 @@ export default function VentesScreen() {
   const [searchQuery, setSearchQuery] = useState('');
   const [loading, setLoading] = useState(false);
   const [showCustomers, setShowCustomers] = useState(false);
+  const [showSearchBar, setShowSearchBar] = useState(false);
+  const [showQRScanner, setShowQRScanner] = useState(false);
+  const [syncStatus, setSyncStatus] = useState<'synced' | 'pending' | 'syncing'>('synced');
+  const [showAddCustomerModal, setShowAddCustomerModal] = useState(false);
+  const [newCustomer, setNewCustomer] = useState({
+    name: '',
+    phone: '',
+    email: '',
+    address: '',
+    customer_type: 'retail' as 'retail' | 'wholesale',
+    credit_limit: 0,
+    credit_balance: 0,
+  });
 
   useEffect(() => {
     loadData();
   }, []);
 
+  // Synchronisation automatique quand la connexion est rétablie
+  useEffect(() => {
+    if (isConnected) {
+      const syncPendingSales = async () => {
+        try {
+          setSyncStatus('syncing');
+          console.log('🔄 Synchronisation automatique des ventes...');
+          await syncService.startSync();
+          setSyncStatus('synced');
+          console.log('✅ Synchronisation des ventes terminée');
+        } catch (error) {
+          setSyncStatus('pending');
+          console.error('❌ Erreur synchronisation automatique:', error);
+        }
+      };
+      
+      syncPendingSales();
+    } else {
+      setSyncStatus('pending');
+    }
+  }, [isConnected]);
+
   const loadData = async () => {
     try {
       setLoading(true);
       await dispatch(fetchProducts());
-      const customersData = await databaseService.getAll('customers');
+      
+      // Charger les clients depuis la base de données locale (exclure ceux marqués pour suppression)
+      const allCustomers = await databaseService.getAll('customers') as Customer[];
+      const customersData = allCustomers.filter(customer => !(customer as any).to_delete);
       setCustomers(customersData);
+      
+      console.log(`👥 ${customersData.length} clients chargés`);
     } catch (error) {
       console.error('Erreur chargement données:', error);
     } finally {
       setLoading(false);
+    }
+  };
+
+  // Fonction pour nettoyer les anciens clients et recharger
+  const resetCustomers = async () => {
+    try {
+      Alert.alert(
+        'Réinitialiser les Clients ?',
+        'Cela supprimera tous les clients locaux. Les clients synchronisés dans Firebase seront préservés.',
+        [
+          { text: 'Annuler', style: 'cancel' },
+          {
+            text: 'Réinitialiser',
+            style: 'destructive',
+            onPress: async () => {
+              setLoading(true);
+              console.log('🧹 Nettoyage des clients en dur...');
+              
+              // Vider la table customers locale directement avec AsyncStorage
+              await AsyncStorage.setItem('customers', JSON.stringify([]));
+              
+              console.log('✅ Clients locaux supprimés');
+              
+              // Recharger
+              await loadData();
+              setLoading(false);
+              Alert.alert('Succès', 'Clients réinitialisés ! Créez vos clients via le bouton +');
+            },
+          },
+        ]
+      );
+    } catch (error) {
+      console.error('Erreur réinitialisation clients:', error);
+      Alert.alert('Erreur', 'Impossible de réinitialiser les clients');
     }
   };
 
@@ -118,6 +223,57 @@ export default function VentesScreen() {
     return cart.reduce((count, item) => count + item.quantity, 0);
   };
 
+  const handleQRScan = (data: string) => {
+    console.log('🔍 QR Code scanné:', data);
+    
+    // Fermer le scanner
+    setShowQRScanner(false);
+    
+    // Analyser le contenu du QR Code
+    try {
+      // Essayer de parser le JSON (au cas où c'est un QR code généré par l'app)
+      let parsedData;
+      try {
+        parsedData = JSON.parse(data);
+      } catch {
+        // Si ce n'est pas du JSON, essayer de parser une deuxième fois (double encodage)
+        try {
+          parsedData = JSON.parse(JSON.parse(data));
+        } catch {
+          // Si ce n'est toujours pas du JSON, traiter comme un code-barres simple
+          parsedData = { barcode: data };
+        }
+      }
+      
+      // Chercher le produit par code-barres ou SKU
+      const product = products.find(p => 
+        p.barcode === parsedData.barcode || 
+        p.sku === parsedData.sku ||
+        p.barcode === data ||
+        p.sku === data
+      );
+      
+      if (product) {
+        // Ajouter le produit au panier
+        addToCart(product);
+        Alert.alert(
+          'Produit trouvé !',
+          `${product.name} ajouté au panier`,
+          [{ text: 'OK' }]
+        );
+      } else {
+        Alert.alert(
+          'Produit non trouvé',
+          'Aucun produit correspondant à ce code-barres',
+          [{ text: 'OK' }]
+        );
+      }
+    } catch (error) {
+      console.error('Erreur lors du scan QR:', error);
+      Alert.alert('Erreur', 'Impossible de traiter le code scanné');
+    }
+  };
+
   const filteredProducts = products.filter(product =>
     product.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
     product.sku.toLowerCase().includes(searchQuery.toLowerCase())
@@ -132,8 +288,22 @@ export default function VentesScreen() {
     try {
       setLoading(true);
       
-      // Créer la vente
+      // Debug de l'utilisateur
+      console.log('🔍 [DEBUG] Utilisateur actuel:', user);
+      console.log('🔍 [DEBUG] isConnected:', isConnected);
+      
+      // Créer un utilisateur par défaut si nécessaire
+      const defaultUser = {
+        uid: 'default-user-pos',
+        displayName: 'Vendeur POS',
+        email: 'pos@gestion.com'
+      };
+      
+      const currentUser = user || defaultUser;
+      
+      // Créer la vente avec informations utilisateur
       const saleData = {
+        user_id: currentUser.uid,
         customer_id: selectedCustomer?.id || null,
         location_id: 'default_location',
         total_amount: getCartTotal(),
@@ -142,10 +312,14 @@ export default function VentesScreen() {
         payment_method: 'cash',
         payment_status: 'paid',
         sale_date: new Date().toISOString(),
-        created_by: 'current_user',
+        created_by: currentUser.displayName || currentUser.email || 'Utilisateur POS',
         notes: `Vente POS - ${cart.length} articles`,
         sync_status: 'pending' as const,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
       };
+      
+      console.log('🔍 [DEBUG] Données de vente:', saleData);
 
       const saleId = await databaseService.insert('sales', saleData);
 
@@ -162,18 +336,61 @@ export default function VentesScreen() {
         // Mettre à jour le stock
         const stockItems = await databaseService.query('SELECT * FROM stock WHERE product_id = ?', [item.product_id]);
         if (stockItems.length > 0) {
-          const stockItem = stockItems[0];
+          const stockItem = stockItems[0] as any;
+          const newStock = stockItem.quantity_current - item.quantity;
+          
           await databaseService.update('stock', stockItem.id, {
-            quantity_current: stockItem.quantity_current - item.quantity,
+            quantity_current: newStock,
+            last_movement_date: new Date().toISOString(),
+            last_movement_type: 'out',
+            sync_status: 'pending',
+          });
+          
+          // Ajouter la mise à jour de stock à la queue de synchronisation
+          console.log('🔍 [DEBUG] Ajout mise à jour stock à la queue:', {
+            table: 'stock',
+            id: stockItem.id,
+            operation: 'update',
+            data: {
+              quantity_current: newStock,
+              last_movement_date: new Date().toISOString(),
+              last_movement_type: 'out',
+            }
+          });
+          
+          await syncService.addToSyncQueue('stock', stockItem.id, 'update', {
+            product_id: item.product_id,  // Important : inclure le product_id pour Firebase
+            quantity_current: newStock,
             last_movement_date: new Date().toISOString(),
             last_movement_type: 'out',
           });
+          
+          // Mettre à jour le stock dans le store Redux pour un affichage instantané
+          dispatch(updateStockLocally({ productId: item.product_id, newStock }));
         }
       }
 
       // Ajouter à la queue de synchronisation
-      // await syncService.addToSyncQueue('sales', saleId, 'create', saleData);
+      await syncService.addToSyncQueue('sales', saleId, 'create', saleData);
+      
+      // Synchroniser immédiatement si en ligne
+      if (isConnected) {
+        try {
+          setSyncStatus('syncing');
+          await syncService.startSync();
+          setSyncStatus('synced');
+          console.log('✅ Vente synchronisée immédiatement');
+        } catch (error) {
+          setSyncStatus('pending');
+          console.log('⚠️ Erreur synchronisation immédiate, sera retentée plus tard');
+        }
+      } else {
+        setSyncStatus('pending');
+      }
 
+      // Rafraîchir les produits pour mettre à jour le stock
+      await dispatch(fetchProducts());
+      
       Alert.alert(
         'Vente Réussie! 🎉',
         `Vente #${saleId}\nTotal: ${getCartTotal().toLocaleString()} FCFA`,
@@ -200,71 +417,211 @@ export default function VentesScreen() {
     <TouchableOpacity
       style={styles.productCard}
       onPress={() => addToCart(product)}
+      activeOpacity={0.7}
     >
-      <View style={styles.productHeader}>
+      {/* Image du produit */}
+      <View style={styles.productImageContainer}>
         <Text style={styles.productImage}>📦</Text>
-        <View style={styles.productInfo}>
-          <Text style={styles.productName}>{product.name}</Text>
-          <Text style={styles.productSku}>SKU: {product.sku}</Text>
-        </View>
-        <Text style={styles.productPrice}>{product.price_sell.toLocaleString()} FCFA</Text>
       </View>
-      <Text style={styles.productDescription} numberOfLines={2}>
-        {product.description || 'Aucune description'}
-      </Text>
+      
+      {/* Informations essentielles */}
+      <View style={styles.productDetails}>
+        <Text style={styles.productName} numberOfLines={2}>
+          {product.name}
+        </Text>
+        <Text style={styles.productPrice}>
+          {product.price_sell.toLocaleString()} FCFA
+        </Text>
+      </View>
     </TouchableOpacity>
   );
 
   const renderCartItem = ({ item }: { item: CartItem }) => (
     <View style={styles.cartItem}>
-      <View style={styles.cartItemInfo}>
-        <Text style={styles.cartItemName}>{item.name}</Text>
-        <Text style={styles.cartItemPrice}>{item.price.toLocaleString()} FCFA</Text>
+      {/* Image et nom du produit */}
+      <View style={styles.cartItemLeft}>
+        <View style={styles.cartItemImage}>
+          <Text style={styles.cartItemImageText}>📦</Text>
+        </View>
+        <View style={styles.cartItemInfo}>
+          <Text style={styles.cartItemName} numberOfLines={2}>
+            {item.name}
+          </Text>
+          <Text style={styles.cartItemPrice}>
+            {item.price.toLocaleString()} FCFA
+          </Text>
+        </View>
       </View>
-      <View style={styles.cartItemControls}>
-        <TouchableOpacity
-          style={styles.quantityButton}
-          onPress={() => updateCartQuantity(item.product_id, item.quantity - 1)}
-        >
-          <Text style={styles.quantityButtonText}>-</Text>
-        </TouchableOpacity>
-        <Text style={styles.quantityText}>{item.quantity}</Text>
-        <TouchableOpacity
-          style={styles.quantityButton}
-          onPress={() => updateCartQuantity(item.product_id, item.quantity + 1)}
-        >
-          <Text style={styles.quantityButtonText}>+</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={styles.removeButton}
-          onPress={() => removeFromCart(item.product_id)}
-        >
-          <Ionicons name="trash-outline" size={16} color="#FF3B30" />
-        </TouchableOpacity>
+      
+      {/* Contrôles de quantité */}
+      <View style={styles.cartItemRight}>
+        <View style={styles.quantityContainer}>
+          <TouchableOpacity
+            style={styles.quantityButton}
+            onPress={() => updateCartQuantity(item.product_id, item.quantity - 1)}
+          >
+            <Ionicons name="remove" size={16} color="#fff" />
+          </TouchableOpacity>
+          <Text style={styles.quantityText}>{item.quantity}</Text>
+          <TouchableOpacity
+            style={styles.quantityButton}
+            onPress={() => updateCartQuantity(item.product_id, item.quantity + 1)}
+          >
+            <Ionicons name="add" size={16} color="#fff" />
+          </TouchableOpacity>
+        </View>
+        
+        {/* Total et suppression */}
+        <View style={styles.cartItemActions}>
+          <Text style={styles.cartItemTotal}>
+            {item.total.toLocaleString()} FCFA
+          </Text>
+          <TouchableOpacity
+            style={styles.removeButton}
+            onPress={() => removeFromCart(item.product_id)}
+          >
+            <Ionicons name="trash-outline" size={18} color="#FF3B30" />
+          </TouchableOpacity>
+        </View>
       </View>
-      <Text style={styles.cartItemTotal}>{item.total.toLocaleString()} FCFA</Text>
     </View>
   );
 
+  const createCustomer = async () => {
+    try {
+      if (!newCustomer.name.trim()) {
+        Alert.alert('Erreur', 'Le nom du client est requis');
+        return;
+      }
+
+      setLoading(true);
+
+      // Créer le client localement
+      const customerData = {
+        ...newCustomer,
+        created_at: new Date().toISOString(),
+        sync_status: 'pending' as const,
+      };
+
+      const customerId = await databaseService.insert('customers', customerData);
+      console.log(`✅ Client créé localement: ${customerId}`);
+
+      // Ajouter à la queue de synchronisation
+      await syncService.addToSyncQueue('customers', customerId, 'create', customerData);
+
+      // Synchroniser immédiatement si en ligne
+      if (isConnected) {
+        try {
+          await syncService.startSync();
+          console.log('✅ Client synchronisé immédiatement');
+        } catch (error) {
+          console.log('⚠️ Erreur synchronisation immédiate, sera retentée plus tard');
+        }
+      }
+
+      // Recharger les clients
+      await loadData();
+
+      // Réinitialiser le formulaire
+      setNewCustomer({
+        name: '',
+        phone: '',
+        email: '',
+        address: '',
+        customer_type: 'retail',
+        credit_limit: 0,
+        credit_balance: 0,
+      });
+
+      setShowAddCustomerModal(false);
+      Alert.alert('Succès', 'Client créé avec succès ! 🎉');
+    } catch (error) {
+      console.error('Erreur création client:', error);
+      Alert.alert('Erreur', 'Impossible de créer le client');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const deleteCustomer = async (customerId: string, customerName: string) => {
+    Alert.alert(
+      'Supprimer le client',
+      `Êtes-vous sûr de vouloir supprimer le client "${customerName}" ?`,
+      [
+        { text: 'Annuler', style: 'cancel' },
+        {
+          text: 'Supprimer',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              setLoading(true);
+              
+              // Récupérer les données du client avant suppression pour la sync
+              const customerData = await databaseService.getById('customers', customerId);
+              
+              // Ajouter à la queue de synchronisation pour suppression en ligne
+              if (customerData) {
+                await syncService.addToSyncQueue('customers', customerId, 'delete', customerData);
+                console.log(`🗑️ Client "${customerName}" ajouté à la queue de suppression`);
+                
+                // Marquer le client comme "à supprimer" au lieu de le supprimer immédiatement
+                await databaseService.update('customers', customerId, {
+                  sync_status: 'pending',
+                  to_delete: true
+                });
+              }
+              
+              // Si un client sélectionné est supprimé, le désélectionner
+              if (selectedCustomer?.id === customerId) {
+                setSelectedCustomer(null);
+              }
+              
+              // Recharger la liste des clients
+              await loadData();
+              
+              Alert.alert('Succès', 'Client supprimé avec succès ! 🗑️');
+            } catch (error) {
+              console.error('Erreur suppression client:', error);
+              Alert.alert('Erreur', 'Impossible de supprimer le client');
+            } finally {
+              setLoading(false);
+            }
+          },
+        },
+      ]
+    );
+  };
+
   const renderCustomer = ({ item: customer }: { item: Customer }) => (
-    <TouchableOpacity
-      style={[
-        styles.customerCard,
-        selectedCustomer?.id === customer.id && styles.customerCardSelected,
-      ]}
-      onPress={() => {
-        setSelectedCustomer(customer);
-        setShowCustomers(false);
-      }}
-    >
-      <Text style={styles.customerName}>{customer.name}</Text>
-      <Text style={styles.customerType}>
-        {customer.customer_type === 'wholesale' ? 'Gros' : 'Détail'}
-      </Text>
-      {customer.phone && (
-        <Text style={styles.customerPhone}>{customer.phone}</Text>
-      )}
-    </TouchableOpacity>
+    <View style={styles.customerCardContainer}>
+      <TouchableOpacity
+        style={[
+          styles.customerCard,
+          selectedCustomer?.id === customer.id && styles.customerCardSelected,
+        ]}
+        onPress={() => {
+          setSelectedCustomer(customer);
+          setShowCustomers(false);
+        }}
+      >
+        <View style={styles.customerInfo}>
+          <Text style={styles.customerName}>{customer.name}</Text>
+          <Text style={styles.customerType}>
+            {customer.customer_type === 'wholesale' ? 'Gros' : 'Détail'}
+          </Text>
+          {customer.phone && (
+            <Text style={styles.customerPhone}>{customer.phone}</Text>
+          )}
+        </View>
+      </TouchableOpacity>
+      <TouchableOpacity
+        style={styles.deleteCustomerButton}
+        onPress={() => deleteCustomer(customer.id, customer.name)}
+        disabled={loading}
+      >
+        <Ionicons name="trash-outline" size={dynamicSizes.button.size} color="#FF3B30" />
+      </TouchableOpacity>
+    </View>
   );
 
   if (loading && products.length === 0) {
@@ -280,54 +637,119 @@ export default function VentesScreen() {
     <View style={styles.container}>
       {/* Header */}
       <View style={styles.header}>
-        <Text style={styles.title}>Point de Vente</Text>
-        <Text style={styles.subtitle}>Interface de caisse moderne</Text>
+        <View style={styles.headerContent}>
+          <View style={styles.headerText}>
+            <Text style={styles.title}>Point de Vente</Text>
+            {/* Indicateur de synchronisation */}
+            <View style={styles.syncIndicator}>
+              <View style={[
+                styles.syncDot, 
+                { backgroundColor: syncStatus === 'synced' ? '#34C759' : syncStatus === 'syncing' ? '#FF9500' : '#FF3B30' }
+              ]} />
+              <Text style={styles.syncText}>
+                {syncStatus === 'synced' ? 'Synchronisé' : 
+                 syncStatus === 'syncing' ? 'Synchronisation...' : 
+                 'En attente de sync'}
+              </Text>
+            </View>
+          </View>
+          <View style={styles.headerActions}>
+            <TouchableOpacity 
+              style={styles.headerIcon}
+              onPress={() => setShowSearchBar(!showSearchBar)}
+            >
+              <Ionicons name="search-outline" size={22} color="#007AFF" />
+            </TouchableOpacity>
+            <TouchableOpacity 
+              style={styles.headerIcon}
+              onPress={() => setShowQRScanner(true)}
+            >
+              <Ionicons name="barcode-outline" size={22} color="#007AFF" />
+            </TouchableOpacity>
+          </View>
+        </View>
       </View>
+
+      {/* Barre de recherche - affichée conditionnellement */}
+      {showSearchBar && (
+        <View style={styles.searchContainer}>
+          <TextInput
+            style={styles.searchInput}
+            placeholder="Rechercher un produit..."
+            value={searchQuery}
+            onChangeText={(text) => {
+              setSearchQuery(text);
+              // Masquer la barre de recherche si le texte est vide
+              if (text === '') {
+                setShowSearchBar(false);
+              }
+            }}
+            placeholderTextColor="#999"
+            autoFocus={true}
+          />
+        </View>
+      )}
 
       <View style={styles.content}>
         {/* Panier */}
         <View style={styles.cartSection}>
           <View style={styles.cartHeader}>
             <Text style={styles.cartTitle}>
-              Panier ({getCartItemsCount()} articles)
+              Panier ({getCartItemsCount()})
             </Text>
-            <TouchableOpacity
-              style={styles.clearCartButton}
-              onPress={() => setCart([])}
-            >
-              <Text style={styles.clearCartText}>Vider</Text>
-            </TouchableOpacity>
+            {cart.length > 0 && (
+              <TouchableOpacity
+                style={styles.clearCartButton}
+                onPress={() => setCart([])}
+              >
+                <Text style={styles.clearCartText}>Vider</Text>
+              </TouchableOpacity>
+            )}
           </View>
 
           {cart.length === 0 ? (
             <View style={styles.emptyCart}>
+              <Ionicons name="cart-outline" size={64} color="#ccc" />
               <Text style={styles.emptyCartText}>Panier vide</Text>
               <Text style={styles.emptyCartSubtext}>
-                Ajoutez des produits pour commencer
+                Sélectionnez des produits pour commencer la vente
               </Text>
             </View>
           ) : (
-            <ScrollView style={styles.cartList}>
+            <ScrollView style={styles.cartList} showsVerticalScrollIndicator={false}>
               {cart.map((item) => (
                 <View key={item.id} style={styles.cartItem}>
+                  {/* Informations du produit */}
                   <View style={styles.cartItemInfo}>
-                    <Text style={styles.cartItemName}>{item.name}</Text>
-                    <Text style={styles.cartItemPrice}>{item.price.toLocaleString()} FCFA</Text>
+                    <Text style={styles.cartItemName} numberOfLines={2}>
+                      {item.name}
+                    </Text>
                   </View>
-                  <View style={styles.cartItemControls}>
-                    <TouchableOpacity
-                      style={styles.quantityButton}
-                      onPress={() => updateCartQuantity(item.product_id, item.quantity - 1)}
-                    >
-                      <Text style={styles.quantityButtonText}>-</Text>
-                    </TouchableOpacity>
-                    <Text style={styles.quantityText}>{item.quantity}</Text>
-                    <TouchableOpacity
-                      style={styles.quantityButton}
-                      onPress={() => updateCartQuantity(item.product_id, item.quantity + 1)}
-                    >
-                      <Text style={styles.quantityButtonText}>+</Text>
-                    </TouchableOpacity>
+                  
+                  {/* Contrôles de quantité et prix */}
+                  <View style={styles.quantitySection}>
+                    <View style={styles.quantityContainer}>
+                      <TouchableOpacity
+                        style={styles.quantityButton}
+                        onPress={() => updateCartQuantity(item.product_id, item.quantity - 1)}
+                      >
+                        <Ionicons name="remove" size={dynamicSizes.button.size * 0.5} color="#fff" />
+                      </TouchableOpacity>
+                      <Text style={styles.quantityText}>{item.quantity}</Text>
+                      <TouchableOpacity
+                        style={styles.quantityButton}
+                        onPress={() => updateCartQuantity(item.product_id, item.quantity + 1)}
+                      >
+                        <Ionicons name="add" size={dynamicSizes.button.size * 0.5} color="#fff" />
+                      </TouchableOpacity>
+                    </View>
+                    <Text style={styles.cartItemPrice}>
+                      {item.total.toLocaleString()} FCFA
+                    </Text>
+                  </View>
+                  
+                  {/* Suppression */}
+                  <View style={styles.cartItemActions}>
                     <TouchableOpacity
                       style={styles.removeButton}
                       onPress={() => removeFromCart(item.product_id)}
@@ -335,7 +757,6 @@ export default function VentesScreen() {
                       <Ionicons name="trash-outline" size={16} color="#FF3B30" />
                     </TouchableOpacity>
                   </View>
-                  <Text style={styles.cartItemTotal}>{item.total.toLocaleString()} FCFA</Text>
                 </View>
               ))}
             </ScrollView>
@@ -358,13 +779,22 @@ export default function VentesScreen() {
                 </Text>
               </TouchableOpacity>
 
-              <ZohoButton
-                title="💳 Finaliser la Vente"
-                onPress={processSale}
-                variant="primary"
+              <TouchableOpacity
                 style={styles.checkoutButton}
-                loading={loading}
-              />
+                onPress={processSale}
+                disabled={loading}
+              >
+                {loading ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <>
+                    <Ionicons name="card" size={dynamicSizes.fontSize.large} color="#fff" />
+                    <Text style={styles.checkoutButtonText}>
+                      ENCAISSER {getCartTotal().toLocaleString()} FCFA
+                    </Text>
+                  </>
+                )}
+              </TouchableOpacity>
             </View>
           )}
         </View>
@@ -372,7 +802,25 @@ export default function VentesScreen() {
         {/* Liste des Clients */}
         {showCustomers && (
           <View style={styles.customersSection}>
-            <Text style={styles.customersTitle}>Sélectionner un Client</Text>
+            <View style={styles.customersSectionHeader}>
+              <View style={styles.customersHeaderLeft}>
+                <Text style={styles.customersTitle}>Clients</Text>
+                {customers.length > 1 && (
+                  <TouchableOpacity
+                    style={styles.resetCustomersButtonSmall}
+                    onPress={resetCustomers}
+                  >
+                    <Ionicons name="trash-outline" size={20} color="#ff6b6b" />
+                  </TouchableOpacity>
+                )}
+              </View>
+              <TouchableOpacity
+                style={styles.addCustomerButton}
+                onPress={() => setShowAddCustomerModal(true)}
+              >
+                <Ionicons name="add-circle" size={32} color="#007AFF" />
+              </TouchableOpacity>
+            </View>
             <FlatList
               data={customers}
               renderItem={renderCustomer}
@@ -392,29 +840,163 @@ export default function VentesScreen() {
           </View>
         )}
 
-        {/* Recherche et Produits */}
+        {/* Produits */}
         {!showCustomers && (
           <View style={styles.productsSection}>
-            <TextInput
-              style={styles.searchInput}
-              placeholder="Rechercher un produit..."
-              value={searchQuery}
-              onChangeText={setSearchQuery}
-              placeholderTextColor="#999"
-            />
 
             <FlatList
               data={filteredProducts}
               renderItem={renderProduct}
               keyExtractor={(item) => item.id}
               style={styles.productsList}
+              contentContainerStyle={styles.productsListContent}
               showsVerticalScrollIndicator={false}
-              numColumns={2}
-              key={2}
+              numColumns={isLargeScreen ? 4 : isDesktop ? 3 : isTablet ? 3 : 2}
+              columnWrapperStyle={isLargeScreen || isDesktop || isTablet ? styles.productRow : undefined}
+              key={isLargeScreen ? 4 : isDesktop ? 3 : isTablet ? 3 : 2}
             />
           </View>
         )}
       </View>
+
+      {/* Modal QR Scanner */}
+      <Modal
+        visible={showQRScanner}
+        animationType="slide"
+        presentationStyle="fullScreen"
+      >
+        <QRScanner
+          onScan={handleQRScan}
+          onClose={() => setShowQRScanner(false)}
+          title="Scanner QR Code"
+          subtitle="Scannez un code QR pour ajouter un produit au panier"
+        />
+      </Modal>
+
+      {/* Modal Ajout Client */}
+      <Modal
+        visible={showAddCustomerModal}
+        animationType="slide"
+        transparent={true}
+        onRequestClose={() => setShowAddCustomerModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Nouveau Client</Text>
+              <TouchableOpacity
+                onPress={() => setShowAddCustomerModal(false)}
+                style={styles.modalCloseButton}
+              >
+                <Ionicons name="close-circle" size={32} color="#666" />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView style={styles.modalBody} showsVerticalScrollIndicator={false}>
+              {/* Nom */}
+              <View style={styles.formGroup}>
+                <Text style={styles.formLabel}>Nom *</Text>
+                <TextInput
+                  style={styles.formInput}
+                  placeholder="Nom du client"
+                  value={newCustomer.name}
+                  onChangeText={(text) => setNewCustomer({ ...newCustomer, name: text })}
+                />
+              </View>
+
+              {/* Téléphone */}
+              <View style={styles.formGroup}>
+                <Text style={styles.formLabel}>Téléphone</Text>
+                <TextInput
+                  style={styles.formInput}
+                  placeholder="+223 XX XX XX XX"
+                  value={newCustomer.phone}
+                  onChangeText={(text) => setNewCustomer({ ...newCustomer, phone: text })}
+                  keyboardType="phone-pad"
+                />
+              </View>
+
+              {/* Email */}
+              <View style={styles.formGroup}>
+                <Text style={styles.formLabel}>Email</Text>
+                <TextInput
+                  style={styles.formInput}
+                  placeholder="email@exemple.com"
+                  value={newCustomer.email}
+                  onChangeText={(text) => setNewCustomer({ ...newCustomer, email: text })}
+                  keyboardType="email-address"
+                  autoCapitalize="none"
+                />
+              </View>
+
+              {/* Adresse */}
+              <View style={styles.formGroup}>
+                <Text style={styles.formLabel}>Adresse</Text>
+                <TextInput
+                  style={styles.formInput}
+                  placeholder="Adresse complète"
+                  value={newCustomer.address}
+                  onChangeText={(text) => setNewCustomer({ ...newCustomer, address: text })}
+                  multiline
+                  numberOfLines={2}
+                />
+              </View>
+
+              {/* Type de Client */}
+              <View style={styles.formGroup}>
+                <Text style={styles.formLabel}>Type de Client</Text>
+                <View style={styles.customerTypeSelector}>
+                  <TouchableOpacity
+                    style={[
+                      styles.customerTypeButton,
+                      newCustomer.customer_type === 'retail' && styles.customerTypeButtonActive
+                    ]}
+                    onPress={() => setNewCustomer({ ...newCustomer, customer_type: 'retail' })}
+                  >
+                    <Text style={[
+                      styles.customerTypeButtonText,
+                      newCustomer.customer_type === 'retail' && styles.customerTypeButtonTextActive
+                    ]}>Détail</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[
+                      styles.customerTypeButton,
+                      newCustomer.customer_type === 'wholesale' && styles.customerTypeButtonActive
+                    ]}
+                    onPress={() => setNewCustomer({ ...newCustomer, customer_type: 'wholesale' })}
+                  >
+                    <Text style={[
+                      styles.customerTypeButtonText,
+                      newCustomer.customer_type === 'wholesale' && styles.customerTypeButtonTextActive
+                    ]}>Gros</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </ScrollView>
+
+            {/* Boutons */}
+            <View style={styles.modalFooter}>
+              <TouchableOpacity
+                style={styles.modalCancelButton}
+                onPress={() => setShowAddCustomerModal(false)}
+              >
+                <Text style={styles.modalCancelButtonText}>Annuler</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.modalSaveButton}
+                onPress={createCustomer}
+                disabled={loading}
+              >
+                {loading ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <Text style={styles.modalSaveButtonText}>Créer Client</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -447,178 +1029,300 @@ const styles = StyleSheet.create({
     shadowRadius: 8,
     elevation: 4,
   },
+  headerContent: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  headerText: {
+    flex: 1,
+  },
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  headerIcon: {
+    padding: 8,
+    marginLeft: 8,
+    borderRadius: 8,
+    backgroundColor: '#f0f8ff',
+  },
   title: {
-    fontSize: 28,
+    fontSize: dynamicSizes.fontSize.xlarge + 10,
     fontWeight: 'bold',
     color: '#1a1a1a',
-    marginBottom: 4,
+    marginBottom: dynamicSizes.spacing.xs,
+  },
+  syncIndicator: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: dynamicSizes.spacing.xs,
+  },
+  syncDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    marginRight: dynamicSizes.spacing.xs,
+  },
+  syncText: {
+    fontSize: dynamicSizes.fontSize.small,
+    color: '#666',
+    fontWeight: '500',
   },
   subtitle: {
     fontSize: 16,
     color: '#666',
+  },
+  searchContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    backgroundColor: '#fff',
+    borderBottomWidth: 1,
+    borderBottomColor: '#e0e0e0',
+  },
+  searchInput: {
+    flex: 1,
+    backgroundColor: '#f0f0f0',
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    fontSize: 16,
+    color: '#1a1a1a',
   },
   content: {
     flex: 1,
     flexDirection: 'row',
   },
   cartSection: {
-    width: width * 0.4,
+    width: isLargeScreen ? Math.min(width * 0.25, 350) : 
+           isDesktop ? Math.min(width * 0.3, 320) : 
+           isTablet ? Math.min(width * 0.35, 300) : 
+           Math.min(width * 0.4, 300),
     backgroundColor: '#fff',
     borderRightWidth: 1,
     borderRightColor: '#e0e0e0',
+    zIndex: 1,
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 2, height: 0 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
   },
   cartHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    padding: 16,
+    padding: dynamicSizes.spacing.lg,
     borderBottomWidth: 1,
     borderBottomColor: '#e0e0e0',
   },
   cartTitle: {
-    fontSize: 18,
+    fontSize: dynamicSizes.fontSize.xlarge,
     fontWeight: '600',
     color: '#1a1a1a',
   },
   clearCartButton: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
+    paddingHorizontal: dynamicSizes.spacing.md,
+    paddingVertical: dynamicSizes.spacing.xs,
     backgroundColor: '#FF3B30',
     borderRadius: 6,
   },
   clearCartText: {
     color: '#fff',
-    fontSize: 12,
+    fontSize: dynamicSizes.fontSize.small,
     fontWeight: '600',
   },
   emptyCart: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    padding: 20,
+    padding: dynamicSizes.spacing.xl,
   },
   emptyCartText: {
-    fontSize: 18,
+    fontSize: dynamicSizes.fontSize.xlarge,
     fontWeight: '600',
     color: '#666',
-    marginBottom: 8,
+    marginBottom: dynamicSizes.spacing.sm,
   },
   emptyCartSubtext: {
-    fontSize: 14,
+    fontSize: dynamicSizes.fontSize.medium,
     color: '#999',
     textAlign: 'center',
   },
   cartList: {
     flex: 1,
-    padding: 16,
+    padding: dynamicSizes.spacing.lg,
+    maxHeight: isTablet ? 500 : 400,
   },
   cartItem: {
+    backgroundColor: '#f8f9fa',
+    borderRadius: 8,
+    padding: dynamicSizes.spacing.sm,
+    marginBottom: dynamicSizes.spacing.xs,
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: '#f0f0f0',
+    justifyContent: 'space-between',
+    minHeight: isTablet ? 60 : 50,
+  },
+  cartItemLeft: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  cartItemImage: {
+    width: 40,
+    height: 40,
+    borderRadius: 8,
+    backgroundColor: '#e0e0e0',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: dynamicSizes.spacing.md,
+  },
+  cartItemImageText: {
+    fontSize: 20,
   },
   cartItemInfo: {
     flex: 1,
+    marginRight: dynamicSizes.spacing.md,
   },
   cartItemName: {
-    fontSize: 14,
+    fontSize: dynamicSizes.fontSize.medium,
     fontWeight: '600',
     color: '#1a1a1a',
-    marginBottom: 2,
+    marginBottom: dynamicSizes.spacing.xs,
   },
-  cartItemPrice: {
-    fontSize: 12,
-    color: '#666',
+  cartItemRight: {
+    alignItems: 'center',
   },
-  cartItemControls: {
+  quantitySection: {
+    alignItems: 'center',
+    marginRight: dynamicSizes.spacing.md,
+  },
+  quantityContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginHorizontal: 8,
+    marginBottom: dynamicSizes.spacing.xs,
+  },
+  cartItemPrice: {
+    fontSize: dynamicSizes.fontSize.small,
+    color: '#007AFF',
+    fontWeight: '600',
+    textAlign: 'center',
   },
   quantityButton: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
+    width: dynamicSizes.button.size,
+    height: dynamicSizes.button.size,
+    borderRadius: dynamicSizes.button.size / 2,
     backgroundColor: '#007AFF',
     justifyContent: 'center',
     alignItems: 'center',
   },
-  quantityButtonText: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: 'bold',
-  },
   quantityText: {
-    fontSize: 14,
+    fontSize: dynamicSizes.fontSize.medium,
     fontWeight: '600',
-    marginHorizontal: 8,
-    minWidth: 20,
+    marginHorizontal: dynamicSizes.spacing.xs,
+    minWidth: dynamicSizes.button.size - 4,
     textAlign: 'center',
+    color: '#1a1a1a',
   },
-  removeButton: {
-    marginLeft: 8,
-  },
-  removeButtonText: {
-    fontSize: 16,
+  cartItemActions: {
+    alignItems: 'center',
   },
   cartItemTotal: {
-    fontSize: 14,
+    fontSize: dynamicSizes.fontSize.medium,
     fontWeight: 'bold',
     color: '#007AFF',
-    minWidth: 80,
-    textAlign: 'right',
+    marginBottom: dynamicSizes.spacing.xs,
+  },
+  removeButton: {
+    padding: dynamicSizes.spacing.xs,
   },
   cartFooter: {
-    padding: 16,
+    padding: dynamicSizes.spacing.md,
     borderTopWidth: 1,
     borderTopColor: '#e0e0e0',
   },
   totalContainer: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 12,
+    alignItems: 'baseline',
+    marginBottom: dynamicSizes.spacing.sm,
   },
   totalLabel: {
-    fontSize: 18,
+    fontSize: dynamicSizes.fontSize.medium,
     fontWeight: '600',
     color: '#1a1a1a',
   },
   totalAmount: {
-    fontSize: 20,
+    fontSize: dynamicSizes.fontSize.medium,
     fontWeight: 'bold',
     color: '#007AFF',
   },
   customerButton: {
     backgroundColor: '#f0f8ff',
     borderRadius: 8,
-    padding: 12,
-    marginBottom: 12,
+    padding: dynamicSizes.spacing.sm,
+    marginBottom: dynamicSizes.spacing.sm,
     borderWidth: 1,
     borderColor: '#007AFF',
   },
   customerButtonText: {
     color: '#007AFF',
-    fontSize: 14,
+    fontSize: dynamicSizes.fontSize.medium,
     fontWeight: '600',
     textAlign: 'center',
   },
   checkoutButton: {
-    width: '100%',
+    backgroundColor: '#34C759',
+    borderRadius: 8,
+    padding: dynamicSizes.spacing.md,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#34C759',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  checkoutButtonText: {
+    color: '#fff',
+    fontSize: dynamicSizes.fontSize.large,
+    fontWeight: 'bold',
+    marginLeft: dynamicSizes.spacing.xs,
   },
   customersSection: {
-    width: width * 0.6,
+    flex: 1,
     backgroundColor: '#fff',
+    zIndex: 2,
+  },
+  customersSectionHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#e0e0e0',
+  },
+  customersHeaderLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
   },
   customersTitle: {
     fontSize: 18,
     fontWeight: '600',
     color: '#1a1a1a',
-    padding: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: '#e0e0e0',
+  },
+  addCustomerButton: {
+    padding: 4,
+  },
+  resetCustomersButtonSmall: {
+    padding: 6,
+    backgroundColor: '#ffe0e0',
+    borderRadius: 6,
   },
   customersList: {
     flex: 1,
@@ -651,6 +1355,24 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#666',
   },
+  customerCardContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  customerInfo: {
+    flex: 1,
+  },
+  deleteCustomerButton: {
+    padding: dynamicSizes.spacing.sm,
+    marginLeft: dynamicSizes.spacing.sm,
+    borderRadius: 6,
+    backgroundColor: '#fff',
+    borderWidth: 1,
+    borderColor: '#FF3B30',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
   noCustomerButton: {
     backgroundColor: '#f0f0f0',
     borderRadius: 8,
@@ -664,62 +1386,171 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   productsSection: {
-    width: width * 0.6,
+    flex: 1,
     backgroundColor: '#fff',
-  },
-  searchInput: {
-    backgroundColor: '#f0f0f0',
-    borderRadius: 8,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    margin: 16,
-    fontSize: 16,
-    color: '#1a1a1a',
+    zIndex: 2,
   },
   productsList: {
     flex: 1,
-    paddingHorizontal: 16,
+  },
+  productsListContent: {
+    paddingHorizontal: 8,
+    paddingBottom: 20,
+  },
+  productRow: {
+    justifyContent: 'space-between',
+    paddingHorizontal: 8,
   },
   productCard: {
-    width: (width * 0.6 - 48) / 2,
+    backgroundColor: '#fff',
+    borderRadius: 8,
+    padding: dynamicSizes.spacing.md,
+    marginBottom: dynamicSizes.spacing.md,
+    borderWidth: 1,
+    borderColor: '#e0e0e0',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
+    elevation: 2,
+    minHeight: isTablet ? 120 : 100,
+    flex: 1,
+    marginHorizontal: dynamicSizes.spacing.xs,
+  },
+  productImageContainer: {
+    alignItems: 'center',
+    marginBottom: dynamicSizes.spacing.sm,
+  },
+  productImage: {
+    fontSize: isTablet ? 28 : 24,
+  },
+  productDetails: {
+    alignItems: 'center',
+  },
+  productName: {
+    fontSize: dynamicSizes.fontSize.small,
+    fontWeight: '600',
+    color: '#1a1a1a',
+    textAlign: 'center',
+    marginBottom: dynamicSizes.spacing.xs,
+    lineHeight: dynamicSizes.fontSize.small + 3,
+  },
+  productPrice: {
+    fontSize: dynamicSizes.fontSize.medium,
+    fontWeight: 'bold',
+    color: '#007AFF',
+    textAlign: 'center',
+  },
+  
+  // Styles Modal Ajout Client
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalContent: {
+    width: '90%',
+    maxWidth: 500,
+    backgroundColor: '#fff',
+    borderRadius: 16,
+    maxHeight: '80%',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
+    elevation: 5,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#e0e0e0',
+  },
+  modalTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#1a1a1a',
+  },
+  modalCloseButton: {
+    padding: 4,
+  },
+  modalBody: {
+    padding: 16,
+  },
+  formGroup: {
+    marginBottom: 16,
+  },
+  formLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#333',
+    marginBottom: 8,
+  },
+  formInput: {
     backgroundColor: '#f8f9fa',
     borderRadius: 8,
     padding: 12,
-    marginBottom: 12,
-    marginHorizontal: 4,
+    fontSize: 16,
     borderWidth: 1,
     borderColor: '#e0e0e0',
   },
-  productHeader: {
+  customerTypeSelector: {
     flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 8,
+    gap: 12,
   },
-  productImage: {
-    fontSize: 24,
-    marginRight: 8,
-  },
-  productInfo: {
+  customerTypeButton: {
     flex: 1,
+    backgroundColor: '#f8f9fa',
+    borderRadius: 8,
+    padding: 12,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#e0e0e0',
   },
-  productName: {
+  customerTypeButtonActive: {
+    backgroundColor: '#007AFF',
+    borderColor: '#007AFF',
+  },
+  customerTypeButtonText: {
     fontSize: 14,
     fontWeight: '600',
-    color: '#1a1a1a',
-    marginBottom: 2,
-  },
-  productSku: {
-    fontSize: 10,
     color: '#666',
   },
-  productPrice: {
-    fontSize: 14,
-    fontWeight: 'bold',
-    color: '#007AFF',
+  customerTypeButtonTextActive: {
+    color: '#fff',
   },
-  productDescription: {
-    fontSize: 12,
+  modalFooter: {
+    flexDirection: 'row',
+    padding: 16,
+    gap: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#e0e0e0',
+  },
+  modalCancelButton: {
+    flex: 1,
+    backgroundColor: '#f0f0f0',
+    borderRadius: 8,
+    padding: 14,
+    alignItems: 'center',
+  },
+  modalCancelButtonText: {
+    fontSize: 16,
+    fontWeight: '600',
     color: '#666',
-    lineHeight: 16,
+  },
+  modalSaveButton: {
+    flex: 1,
+    backgroundColor: '#007AFF',
+    borderRadius: 8,
+    padding: 14,
+    alignItems: 'center',
+  },
+  modalSaveButtonText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#fff',
   },
 });

@@ -1,16 +1,16 @@
 // Service Firebase réel avec Firestore
 import {
-  addDoc,
-  collection,
-  deleteDoc,
-  doc,
-  getDoc,
-  getDocs,
-  orderBy,
-  query,
-  serverTimestamp,
-  updateDoc,
-  where
+    addDoc,
+    collection,
+    deleteDoc,
+    doc,
+    getDoc,
+    getDocs,
+    orderBy,
+    query,
+    serverTimestamp,
+    updateDoc,
+    where
 } from 'firebase/firestore';
 import { getFirebaseId, isValidLocalId } from '../utils/firebaseIdMapper';
 import { db, FIREBASE_ENABLED, FIREBASE_TIMEOUT, FORCE_OFFLINE_MODE } from './firebase-config';
@@ -85,6 +85,34 @@ export interface Customer {
   sync_status: 'synced' | 'pending' | 'error';
 }
 
+export interface Location {
+  id: string;
+  name: string;
+  address: string;
+  location_type: 'warehouse' | 'store' | 'supplier';
+  contact_person?: string;
+  phone?: string;
+  is_active: boolean;
+  created_at: any;
+  updated_at: any;
+  sync_status: 'synced' | 'pending' | 'error';
+}
+
+export interface Inventory {
+  id: string;
+  product_id: string;
+  location_id: string;
+  quantity_available: number;
+  quantity_reserved: number;
+  quantity_min: number;
+  quantity_max: number;
+  last_movement_date?: string;
+  last_movement_type?: string;
+  created_at: any;
+  updated_at: any;
+  sync_status: 'synced' | 'pending' | 'error';
+}
+
 // Interface pour le service Firebase
 export interface FirebaseService {
   init(): Promise<void>;
@@ -99,6 +127,7 @@ export interface FirebaseService {
   getStockByProduct(productId: string): Promise<Stock | null>;
   createStock(stock: Omit<Stock, 'id' | 'created_at' | 'updated_at'>): Promise<string>;
   updateStock(id: string, stock: Partial<Stock>): Promise<void>;
+  updateStockByProductId(productId: string, updates: Partial<Stock>): Promise<void>;
   deleteStock(id: string): Promise<void>;
   // Sales
   getSales(): Promise<Sale[]>;
@@ -106,6 +135,20 @@ export interface FirebaseService {
   // Customers
   getCustomers(): Promise<Customer[]>;
   createCustomer(customer: Omit<Customer, 'id' | 'created_at'>): Promise<string>;
+  deleteCustomer(id: string): Promise<void>;
+  // Locations
+  getLocations(): Promise<Location[]>;
+  getLocationById(id: string): Promise<Location | null>;
+  createLocation(location: Omit<Location, 'id' | 'created_at' | 'updated_at'>): Promise<string>;
+  updateLocation(id: string, location: Partial<Location>): Promise<void>;
+  deleteLocation(id: string): Promise<void>;
+  // Inventory
+  getInventory(): Promise<Inventory[]>;
+  getInventoryByLocation(locationId: string): Promise<Inventory[]>;
+  getInventoryByProduct(productId: string): Promise<Inventory[]>;
+  createInventory(inventory: Omit<Inventory, 'id' | 'created_at' | 'updated_at'>): Promise<string>;
+  updateInventory(id: string, inventory: Partial<Inventory>): Promise<void>;
+  deleteInventory(id: string): Promise<void>;
   // Search
   searchProducts(searchTerm: string): Promise<Product[]>;
   getProductsByCategory(categoryId: string): Promise<Product[]>;
@@ -195,6 +238,17 @@ class FirebaseServiceImpl implements FirebaseService {
     console.log('🚀 [FIREBASE DEBUG] Product reçu:', product);
     
     try {
+      // Vérifier si le produit existe déjà dans Firebase
+      if (product.sku) {
+        console.log('🔍 [FIREBASE DEBUG] Vérification doublon par SKU:', product.sku);
+        const existingProducts = await this.getProducts();
+        const duplicate = existingProducts.find(p => p.sku === product.sku);
+        if (duplicate) {
+          console.log('⚠️ [FIREBASE DEBUG] Doublon détecté par SKU:', duplicate.id);
+          throw new Error(`Produit avec SKU "${product.sku}" existe déjà dans Firebase`);
+        }
+      }
+      
       console.log('🔄 [FIREBASE DEBUG] Création collection reference');
       const productsRef = collection(db, 'products');
       const now = serverTimestamp();
@@ -247,8 +301,8 @@ class FirebaseServiceImpl implements FirebaseService {
         throw new Error('Mode offline');
       }
       
-      console.error('❌ [FIREBASE DEBUG] Erreur création produit:', error);
-      console.error('❌ [FIREBASE DEBUG] Stack trace:', error instanceof Error ? error.stack : 'No stack');
+      // console.error('❌ [FIREBASE DEBUG] Erreur création produit:', error);
+      // console.error('❌ [FIREBASE DEBUG] Stack trace:', error instanceof Error ? error.stack : 'No stack');
       throw error;
     }
   }
@@ -512,6 +566,15 @@ class FirebaseServiceImpl implements FirebaseService {
       console.log('🔄 [FIREBASE DEBUG] Création document reference avec ID:', id);
       const stockRef = doc(db, 'stock', id);
       
+      // Vérifier si le document existe
+      console.log('🔍 [FIREBASE DEBUG] Vérification existence document');
+      const docSnap = await getDoc(stockRef);
+      
+      if (!docSnap.exists()) {
+        console.log('⚠️ [FIREBASE DEBUG] Document stock introuvable, suppression de l\'opération');
+        throw new Error('Document stock introuvable dans Firebase');
+      }
+      
       // Filtrer les valeurs undefined (Firestore ne les accepte pas)
       const cleanUpdates = Object.fromEntries(
         Object.entries(updates).filter(([_, value]) => value !== undefined)
@@ -547,8 +610,120 @@ class FirebaseServiceImpl implements FirebaseService {
         console.log('📱 Mode offline - mise à jour locale uniquement (normal)');
         throw new Error('Mode offline');
       }
+      // Gérer le cas où le document n'existe pas
+      if (error instanceof Error && error.message.includes('Document stock introuvable')) {
+        console.log('⚠️ [FIREBASE DEBUG] Document stock introuvable, opération sera supprimée');
+        throw error;
+      }
       console.error('❌ [FIREBASE DEBUG] Erreur mise à jour stock:', error);
       console.error('❌ [FIREBASE DEBUG] Stack trace:', error instanceof Error ? error.stack : 'No stack');
+      throw error;
+    }
+  }
+
+  async deleteStock(id: string): Promise<void> {
+    try {
+      console.log('🗑️ [FIREBASE DEBUG] Début deleteStock');
+      console.log('🗑️ [FIREBASE DEBUG] ID reçu:', id);
+
+      // Vérifier si Firebase est activé ou en mode offline forcé
+      if (!FIREBASE_ENABLED || !db || FORCE_OFFLINE_MODE) {
+        console.log(FORCE_OFFLINE_MODE ? '📱 Mode OFFLINE forcé, suppression locale uniquement' : '📱 Firebase désactivé, suppression locale uniquement');
+        throw new Error(FORCE_OFFLINE_MODE ? 'Mode offline' : 'Firebase désactivé');
+      }
+
+      console.log('🗑️ [FIREBASE DEBUG] Création document reference avec ID:', id);
+      const stockRef = doc(db, 'stock', id);
+      
+      // Vérifier si le document existe
+      console.log('🔍 [FIREBASE DEBUG] Vérification existence document');
+      const docSnap = await getDoc(stockRef);
+      
+      if (!docSnap.exists()) {
+        console.log('⚠️ [FIREBASE DEBUG] Document stock introuvable, suppression de l\'opération');
+        throw new Error('Document stock introuvable dans Firebase');
+      }
+      
+      console.log('🗑️ [FIREBASE DEBUG] Suppression du document');
+      await Promise.race([
+        deleteDoc(stockRef),
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Timeout Firebase: deleteStock a pris plus de 3 secondes')), FIREBASE_TIMEOUT)
+        )
+      ]);
+
+      console.log('✅ [FIREBASE DEBUG] deleteDoc terminé');
+      console.log('✅ [FIREBASE DEBUG] Stock supprimé de Firestore:', id);
+    } catch (error) {
+      // Gérer les timeouts et mode offline silencieusement
+      if (error instanceof Error && error.message.includes('Timeout Firebase')) {
+        console.log('⚠️ Firebase timeout suppression stock (normal en développement)');
+        throw new Error('Firebase temporairement indisponible');
+      }
+      // Gérer le mode offline silencieusement
+      if (error instanceof Error && error.message.includes('Mode offline')) {
+        console.log('📱 Mode offline - suppression locale uniquement (normal)');
+        throw new Error('Mode offline');
+      }
+      // Gérer le cas où le document n'existe pas
+      if (error instanceof Error && error.message.includes('Document stock introuvable')) {
+        console.log('⚠️ [FIREBASE DEBUG] Document stock introuvable, opération sera supprimée');
+        throw error;
+      }
+      console.error('❌ [FIREBASE DEBUG] Erreur suppression stock:', error);
+      console.error('❌ [FIREBASE DEBUG] Stack trace:', error instanceof Error ? error.stack : 'No stack');
+      throw error;
+    }
+  }
+
+  async updateStockByProductId(productId: string, updates: Partial<Stock>): Promise<void> {
+    try {
+      console.log('🔄 [STOCK BY PRODUCT] Début updateStockByProductId');
+      console.log('🔄 [STOCK BY PRODUCT] Product ID:', productId);
+      console.log('🔄 [STOCK BY PRODUCT] Updates:', updates);
+
+      // Vérifier si Firebase est activé ou en mode offline forcé
+      if (!FIREBASE_ENABLED || !db || FORCE_OFFLINE_MODE) {
+        console.log(FORCE_OFFLINE_MODE ? '📱 Mode OFFLINE forcé' : '📱 Firebase désactivé');
+        throw new Error(FORCE_OFFLINE_MODE ? 'Mode offline' : 'Firebase désactivé');
+      }
+
+      // Chercher le stock par product_id
+      const stockRef = collection(db, 'stock');
+      const q = query(stockRef, where('product_id', '==', productId));
+      const snapshot = await getDocs(q);
+
+      if (snapshot.empty) {
+        console.log('⚠️ [STOCK BY PRODUCT] Aucun stock trouvé pour product_id:', productId);
+        throw new Error('Stock introuvable pour ce produit');
+      }
+
+      // Mettre à jour le premier document trouvé
+      const stockDoc = snapshot.docs[0];
+      const stockDocRef = doc(db, 'stock', stockDoc.id);
+
+      // Filtrer les valeurs undefined
+      const cleanUpdates = Object.fromEntries(
+        Object.entries(updates).filter(([_, value]) => value !== undefined)
+      ) as any;
+
+      const updateData = {
+        ...cleanUpdates,
+        updated_at: serverTimestamp(),
+        sync_status: 'synced',
+      };
+
+      console.log('✅ [STOCK BY PRODUCT] UpdateData final:', updateData);
+      
+      await updateDoc(stockDocRef, updateData);
+
+      console.log('✅ [STOCK BY PRODUCT] Stock mis à jour:', stockDoc.id);
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('Mode offline')) {
+        console.log('📱 Mode offline - mise à jour locale uniquement');
+        throw new Error('Mode offline');
+      }
+      console.error('❌ [STOCK BY PRODUCT] Erreur:', error);
       throw error;
     }
   }
@@ -676,6 +851,64 @@ class FirebaseServiceImpl implements FirebaseService {
       return docRef.id;
     } catch (error) {
       console.error('❌ Erreur création client:', error);
+      throw error;
+    }
+  }
+
+  async deleteCustomer(id: string): Promise<void> {
+    try {
+      console.log('🗑️ [FIREBASE DEBUG] Début deleteCustomer');
+      console.log('🗑️ [FIREBASE DEBUG] ID reçu:', id);
+
+      // Vérifier si Firebase est activé ou en mode offline forcé
+      if (!FIREBASE_ENABLED || !db || FORCE_OFFLINE_MODE) {
+        console.log(FORCE_OFFLINE_MODE ? '📱 Mode OFFLINE forcé, suppression locale uniquement' : '📱 Firebase désactivé, suppression locale uniquement');
+        throw new Error(FORCE_OFFLINE_MODE ? 'Mode offline' : 'Firebase désactivé');
+      }
+
+      // Déterminer l'ID Firebase à utiliser pour la suppression
+      let firebaseId = id;
+      
+      // Si l'ID reçu est un ID local, chercher l'ID Firebase correspondant
+      if (isValidLocalId(id)) {
+        console.log('🔄 [FIREBASE DEBUG] ID local détecté, recherche Firebase ID...');
+        const foundFirebaseId = await getFirebaseId(id);
+        if (foundFirebaseId) {
+          firebaseId = foundFirebaseId;
+          console.log('✅ [FIREBASE DEBUG] Firebase ID trouvé:', firebaseId);
+        } else {
+          console.log('⚠️ [FIREBASE DEBUG] Aucun Firebase ID trouvé, utilisation ID local');
+        }
+      } else {
+        console.log('🔄 [FIREBASE DEBUG] ID Firebase direct:', firebaseId);
+      }
+
+      console.log('🗑️ [FIREBASE DEBUG] Création document reference avec ID:', firebaseId);
+      const customerRef = doc(db, 'customers', firebaseId);
+
+      console.log('🗑️ [FIREBASE DEBUG] Appel deleteDoc avec timeout');
+      
+      // Utiliser Promise.race pour timeout
+      await Promise.race([
+        deleteDoc(customerRef),
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Timeout Firebase')), 10000)
+        )
+      ]);
+
+      console.log('✅ [FIREBASE DEBUG] Client supprimé dans Firestore:', firebaseId);
+    } catch (error) {
+      // Gérer le timeout Firebase silencieusement
+      if (error instanceof Error && error.message.includes('Timeout Firebase')) {
+        console.log('⚠️ Firebase timeout suppression client (normal en développement)');
+        throw new Error('Firebase temporairement indisponible');
+      }
+      // Gérer le mode offline silencieusement
+      if (error instanceof Error && error.message.includes('Mode offline')) {
+        console.log('📱 Mode offline - suppression locale uniquement (normal)');
+        throw new Error('Mode offline');
+      }
+      console.error('❌ [FIREBASE DEBUG] Erreur suppression client:', error);
       throw error;
     }
   }
@@ -987,6 +1220,324 @@ class FirebaseServiceImpl implements FirebaseService {
       return false;
     }
   }
+
+  // ==================== LOCATIONS (EMPLACEMENTS) ====================
+  
+  async getLocations(): Promise<Location[]> {
+    try {
+      console.log('🏢 Récupération des emplacements depuis Firestore');
+      
+      if (!FIREBASE_ENABLED || !db || FORCE_OFFLINE_MODE) {
+        console.log(FORCE_OFFLINE_MODE ? '📱 Mode OFFLINE forcé' : '📱 Firebase désactivé, retour tableau vide');
+        return [];
+      }
+
+      const locationsRef = collection(db, 'locations');
+      const querySnapshot = await Promise.race([
+        getDocs(locationsRef),
+        new Promise<never>((_, reject) => 
+          setTimeout(() => reject(new Error('Timeout Firebase')), FIREBASE_TIMEOUT)
+        )
+      ]);
+
+      const locations: Location[] = [];
+      querySnapshot.forEach((doc) => {
+        locations.push({
+          id: doc.id,
+          ...doc.data()
+        } as Location);
+      });
+
+      console.log(`📦 ${locations.length} emplacements récupérés`);
+      return locations;
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('Timeout Firebase')) {
+        console.log('⚠️ Firebase timeout (normal en développement)');
+      }
+      return [];
+    }
+  }
+
+  async getLocationById(id: string): Promise<Location | null> {
+    try {
+      if (!FIREBASE_ENABLED || !db || FORCE_OFFLINE_MODE) {
+        return null;
+      }
+
+      const locationRef = doc(db, 'locations', id);
+      const docSnap = await getDoc(locationRef);
+
+      if (!docSnap.exists()) {
+        return null;
+      }
+
+      return {
+        id: docSnap.id,
+        ...docSnap.data()
+      } as Location;
+    } catch (error) {
+      console.log('⚠️ Erreur récupération emplacement:', error);
+      return null;
+    }
+  }
+
+  async createLocation(location: Omit<Location, 'id' | 'created_at' | 'updated_at'>): Promise<string> {
+    try {
+      console.log('🚀 [FIREBASE DEBUG] Début createLocation');
+      
+      if (!FIREBASE_ENABLED || !db || FORCE_OFFLINE_MODE) {
+        console.log(FORCE_OFFLINE_MODE ? '📱 Mode OFFLINE forcé, création locale uniquement' : '📱 Firebase désactivé, création locale uniquement');
+        throw new Error(FORCE_OFFLINE_MODE ? 'Mode offline' : 'Firebase désactivé');
+      }
+
+      const locationsRef = collection(db, 'locations');
+      
+      const locationData = {
+        ...location,
+        created_at: serverTimestamp(),
+        updated_at: serverTimestamp(),
+        sync_status: 'synced' as const,
+      };
+
+      const docRef = await Promise.race([
+        addDoc(locationsRef, locationData),
+        new Promise<never>((_, reject) => 
+          setTimeout(() => reject(new Error('Timeout Firebase')), FIREBASE_TIMEOUT)
+        )
+      ]);
+
+      console.log('✅ [FIREBASE DEBUG] Emplacement créé dans Firestore:', docRef.id);
+      return docRef.id;
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('Timeout Firebase')) {
+        throw new Error('Firebase temporairement indisponible');
+      }
+      if (error instanceof Error && error.message.includes('Mode offline')) {
+        throw new Error('Mode offline');
+      }
+      throw error;
+    }
+  }
+
+  async updateLocation(id: string, updates: Partial<Location>): Promise<void> {
+    try {
+      if (!FIREBASE_ENABLED || !db || FORCE_OFFLINE_MODE) {
+        throw new Error(FORCE_OFFLINE_MODE ? 'Mode offline' : 'Firebase désactivé');
+      }
+
+      const locationRef = doc(db, 'locations', id);
+      
+      await Promise.race([
+        updateDoc(locationRef, {
+          ...updates,
+          updated_at: serverTimestamp(),
+        }),
+        new Promise<never>((_, reject) => 
+          setTimeout(() => reject(new Error('Timeout Firebase')), FIREBASE_TIMEOUT)
+        )
+      ]);
+
+      console.log('✅ Emplacement mis à jour dans Firestore');
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('Timeout Firebase')) {
+        throw new Error('Firebase temporairement indisponible');
+      }
+      throw error;
+    }
+  }
+
+  async deleteLocation(id: string): Promise<void> {
+    try {
+      if (!FIREBASE_ENABLED || !db || FORCE_OFFLINE_MODE) {
+        throw new Error(FORCE_OFFLINE_MODE ? 'Mode offline' : 'Firebase désactivé');
+      }
+
+      const locationRef = doc(db, 'locations', id);
+      
+      await Promise.race([
+        deleteDoc(locationRef),
+        new Promise<never>((_, reject) => 
+          setTimeout(() => reject(new Error('Timeout Firebase')), FIREBASE_TIMEOUT)
+        )
+      ]);
+
+      console.log('✅ Emplacement supprimé de Firestore');
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('Timeout Firebase')) {
+        throw new Error('Firebase temporairement indisponible');
+      }
+      throw error;
+    }
+  }
+
+  // ==================== INVENTORY (INVENTAIRE) ====================
+  
+  async getInventory(): Promise<Inventory[]> {
+    try {
+      console.log('📦 Récupération de l\'inventaire depuis Firestore');
+      
+      if (!FIREBASE_ENABLED || !db || FORCE_OFFLINE_MODE) {
+        return [];
+      }
+
+      const inventoryRef = collection(db, 'inventory');
+      const querySnapshot = await Promise.race([
+        getDocs(inventoryRef),
+        new Promise<never>((_, reject) => 
+          setTimeout(() => reject(new Error('Timeout Firebase')), FIREBASE_TIMEOUT)
+        )
+      ]);
+
+      const inventory: Inventory[] = [];
+      querySnapshot.forEach((doc) => {
+        inventory.push({
+          id: doc.id,
+          ...doc.data()
+        } as Inventory);
+      });
+
+      console.log(`📦 ${inventory.length} entrées d\'inventaire récupérées`);
+      return inventory;
+    } catch (error) {
+      return [];
+    }
+  }
+
+  async getInventoryByLocation(locationId: string): Promise<Inventory[]> {
+    try {
+      if (!FIREBASE_ENABLED || !db || FORCE_OFFLINE_MODE) {
+        return [];
+      }
+
+      const inventoryRef = collection(db, 'inventory');
+      const q = query(inventoryRef, where('location_id', '==', locationId));
+      
+      const querySnapshot = await getDocs(q);
+      const inventory: Inventory[] = [];
+      
+      querySnapshot.forEach((doc) => {
+        inventory.push({
+          id: doc.id,
+          ...doc.data()
+        } as Inventory);
+      });
+
+      return inventory;
+    } catch (error) {
+      return [];
+    }
+  }
+
+  async getInventoryByProduct(productId: string): Promise<Inventory[]> {
+    try {
+      if (!FIREBASE_ENABLED || !db || FORCE_OFFLINE_MODE) {
+        return [];
+      }
+
+      const inventoryRef = collection(db, 'inventory');
+      const q = query(inventoryRef, where('product_id', '==', productId));
+      
+      const querySnapshot = await getDocs(q);
+      const inventory: Inventory[] = [];
+      
+      querySnapshot.forEach((doc) => {
+        inventory.push({
+          id: doc.id,
+          ...doc.data()
+        } as Inventory);
+      });
+
+      return inventory;
+    } catch (error) {
+      return [];
+    }
+  }
+
+  async createInventory(inventory: Omit<Inventory, 'id' | 'created_at' | 'updated_at'>): Promise<string> {
+    try {
+      console.log('🚀 [FIREBASE DEBUG] Début createInventory');
+      
+      if (!FIREBASE_ENABLED || !db || FORCE_OFFLINE_MODE) {
+        throw new Error(FORCE_OFFLINE_MODE ? 'Mode offline' : 'Firebase désactivé');
+      }
+
+      const inventoryRef = collection(db, 'inventory');
+      
+      const inventoryData = {
+        ...inventory,
+        created_at: serverTimestamp(),
+        updated_at: serverTimestamp(),
+        sync_status: 'synced' as const,
+      };
+
+      const docRef = await Promise.race([
+        addDoc(inventoryRef, inventoryData),
+        new Promise<never>((_, reject) => 
+          setTimeout(() => reject(new Error('Timeout Firebase')), FIREBASE_TIMEOUT)
+        )
+      ]);
+
+      console.log('✅ [FIREBASE DEBUG] Inventaire créé dans Firestore:', docRef.id);
+      return docRef.id;
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('Timeout Firebase')) {
+        throw new Error('Firebase temporairement indisponible');
+      }
+      throw error;
+    }
+  }
+
+  async updateInventory(id: string, updates: Partial<Inventory>): Promise<void> {
+    try {
+      if (!FIREBASE_ENABLED || !db || FORCE_OFFLINE_MODE) {
+        throw new Error(FORCE_OFFLINE_MODE ? 'Mode offline' : 'Firebase désactivé');
+      }
+
+      const inventoryRef = doc(db, 'inventory', id);
+      
+      await Promise.race([
+        updateDoc(inventoryRef, {
+          ...updates,
+          updated_at: serverTimestamp(),
+        }),
+        new Promise<never>((_, reject) => 
+          setTimeout(() => reject(new Error('Timeout Firebase')), FIREBASE_TIMEOUT)
+        )
+      ]);
+
+      console.log('✅ Inventaire mis à jour dans Firestore');
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('Timeout Firebase')) {
+        throw new Error('Firebase temporairement indisponible');
+      }
+      throw error;
+    }
+  }
+
+  async deleteInventory(id: string): Promise<void> {
+    try {
+      if (!FIREBASE_ENABLED || !db || FORCE_OFFLINE_MODE) {
+        throw new Error(FORCE_OFFLINE_MODE ? 'Mode offline' : 'Firebase désactivé');
+      }
+
+      const inventoryRef = doc(db, 'inventory', id);
+      
+      await Promise.race([
+        deleteDoc(inventoryRef),
+        new Promise<never>((_, reject) => 
+          setTimeout(() => reject(new Error('Timeout Firebase')), FIREBASE_TIMEOUT)
+        )
+      ]);
+
+      console.log('✅ Inventaire supprimé de Firestore');
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('Timeout Firebase')) {
+        throw new Error('Firebase temporairement indisponible');
+      }
+      throw error;
+    }
+  }
+
 }
 
 export const firebaseService = new FirebaseServiceImpl();

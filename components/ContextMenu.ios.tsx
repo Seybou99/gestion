@@ -1,13 +1,7 @@
 import {
-  Button,
-  ContextMenu,
-  Host,
-  Image,
-  Submenu,
-  Switch,
-} from "@expo/ui/swift-ui";
-import * as React from "react";
-import { View } from "react-native";
+  Text,
+  View
+} from "react-native";
 
 const options = [
   {
@@ -102,73 +96,9 @@ const options = [
 ];
 
 export default function ContextMenuProfile() {
-  const [switchStates, setSwitchStates] = React.useState<
-    Record<string, boolean>
-  >({
-    "Show Completed": true,
-  });
-
-  const renderOption = (
-    option: any,
-    index: number
-  ): React.ReactElement | null => {
-    switch (option.type) {
-      case "button":
-        return (
-          <Button
-            key={index}
-            systemImage={option.systemImage}
-            role={option.destructive ? "destructive" : undefined}
-            onPress={() => console.log(`Pressed: ${option.title}`)}
-          >
-            {option.title}
-          </Button>
-        );
-
-      case "switch":
-        return (
-          <Switch
-            key={index}
-            value={switchStates[option.title] || false}
-            label={option.title}
-            variant="checkbox"
-            onValueChange={(value) =>
-              setSwitchStates((prev) => ({ ...prev, [option.title]: value }))
-            }
-          />
-        );
-      case "submenu":
-        return (
-          <Submenu
-            key={index}
-            button={
-              <Button systemImage={option.systemImage}>{option.title}</Button>
-            }
-          >
-            {option.items?.map((subItem: any, subIndex: number) =>
-              renderOption(subItem, subIndex)
-            )}
-          </Submenu>
-        );
-      default:
-        return null;
-    }
-  };
-
   return (
-    <Host style={{ width: 150, height: 50 }}>
-      <ContextMenu>
-        <ContextMenu.Items>
-          {options.map((option, index) => renderOption(option, index))}
-        </ContextMenu.Items>
-        <ContextMenu.Trigger>
-          <View>
-            <Host style={{ width: 35, height: 35 }}>
-              <Image systemName="ellipsis" />
-            </Host>
-          </View>
-        </ContextMenu.Trigger>
-      </ContextMenu>
-    </Host>
+    <View style={{ width: 150, height: 50 }}>
+      <Text>Context Menu Placeholder</Text>
+    </View>
   );
 }

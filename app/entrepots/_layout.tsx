@@ -1,23 +1,24 @@
 import { Stack } from 'expo-router';
-import React from 'react';
 
-export default function ArticlesLayout() {
+export default function EntrepotsLayout() {
   return (
     <Stack>
       <Stack.Screen
         name="index"
         options={{
-          title: 'Articles',
+          title: 'Entrepôts',
           headerShown: false, // Header personnalisé dans le composant
         }}
       />
       <Stack.Screen
         name="[id]"
         options={{
-          title: 'Détails',
-          headerShown: false, // Header personnalisé dans le composant
+          title: 'Détails Entrepôt',
+          headerShown: true,
+          headerBackTitle: 'Retour',
         }}
       />
     </Stack>
   );
 }
+

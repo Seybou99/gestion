@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Alert, StyleSheet, Text, TouchableOpacity, ViewStyle } from 'react-native';
+import { syncService } from '../services/SyncService';
 import { checkAndFixFirebaseSync } from '../utils/checkFirebaseSync';
 import { forceSyncAllProducts } from '../utils/forceSyncAll';
 
@@ -22,7 +23,6 @@ export const CompleteSyncButton: React.FC<CompleteSyncButtonProps> = ({ style })
       
       // 2. Déclencher la synchronisation immédiate
       console.log('🔄 [COMPLETE SYNC] Étape 2: Synchronisation immédiate...');
-      const { syncService } = await import('../services/SyncService');
       await syncService.forceSync();
       
       // 3. Vérifier et corriger Firebase

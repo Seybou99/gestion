@@ -2,14 +2,14 @@ rules_version = '2';
 
 // Règles Firestore pour le développement
 // ATTENTION: Ces règles sont PERMISSIVES pour le développement uniquement
-// Pour la production, utilisez des règles plus strictes
+// Pour la production, utilisez des règles plus strictes avec authentification
 
 service cloud.firestore {
   match /databases/{database}/documents {
     
     // Règles pour les produits (articles)
     match /products/{document} {
-      // Permettre lecture et écriture à tous les utilisateurs authentifiés
+      // Permettre lecture et écriture à tous (même non authentifiés)
       // Pour le développement, on autorise tout
       allow read, write: if true;
     }
@@ -26,6 +26,11 @@ service cloud.firestore {
     
     // Règles pour les clients
     match /customers/{document} {
+      allow read, write: if true;
+    }
+    
+    // Règles pour l'inventaire (stock par emplacement)
+    match /inventory/{document} {
       allow read, write: if true;
     }
     

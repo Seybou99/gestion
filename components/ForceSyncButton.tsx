@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Alert, StyleSheet, Text, TouchableOpacity, ViewStyle } from 'react-native';
+import { syncService } from '../services/SyncService';
 import { forceSyncAllProducts } from '../utils/forceSyncAll';
 
 interface ForceSyncButtonProps {
@@ -19,7 +20,6 @@ export const ForceSyncButton: React.FC<ForceSyncButtonProps> = ({ style }) => {
       const result = await forceSyncAllProducts();
       
       // Déclencher la synchronisation immédiate
-      const { syncService } = await import('../services/SyncService');
       console.log('🔄 [BUTTON] Déclenchement synchronisation immédiate...');
       await syncService.forceSync();
       

@@ -1,5 +1,6 @@
 import { store } from '../store';
 import { setError, setLoading } from '../store/slices/authSlice';
+import { syncCategoriesToLocal } from '../utils/syncFirebaseToLocal';
 import { syncOfflineArticles } from '../utils/syncOfflineData';
 import { databaseService, seedTestData } from './DatabaseService';
 import { firebaseService } from './FirebaseService';
@@ -150,7 +151,7 @@ class AppInitializer {
   // Synchroniser automatiquement les articles offline au démarrage
   private async syncOfflineArticlesOnStartup(): Promise<void> {
     try {
-      console.log('🔄 [STARTUP] Synchronisation automatique des articles offline...');
+      console.log('🔄 [STARTUP] Synchronisation automatique au démarrage...');
       
       // Vérifier si on est connecté
       const state = store.getState() as any;
@@ -161,10 +162,19 @@ class AppInitializer {
         return;
       }
 
-      // Synchroniser les articles offline
+      // 1. Synchroniser les catégories depuis Firebase
+      try {
+        await syncCategoriesToLocal();
+        console.log('✅ [STARTUP] Catégories synchronisées depuis Firebase');
+      } catch (error) {
+        console.error('❌ [STARTUP] Erreur synchronisation catégories:', error);
+        // Continuer même si cela échoue
+      }
+
+      // 2. Synchroniser les articles offline
       await syncOfflineArticles();
       
-      // Déclencher une synchronisation immédiate si il y a des opérations en attente
+      // 3. Déclencher une synchronisation immédiate si il y a des opérations en attente
       const pendingOps = await databaseService.getAll('sync_queue');
       if (pendingOps.length > 0) {
         console.log(`🔄 [STARTUP] ${pendingOps.length} opérations en attente, synchronisation immédiate...`);

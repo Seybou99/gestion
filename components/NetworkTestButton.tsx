@@ -1,6 +1,7 @@
 import React from 'react';
 import { Alert, StyleSheet, Text, TouchableOpacity } from 'react-native';
 import { FORCE_OFFLINE_MODE, setOfflineMode } from '../services/firebase-config';
+import { syncService } from '../services/SyncService';
 import { forceSyncAllPendingArticles } from '../utils/syncOfflineData';
 
 interface NetworkTestButtonProps {
@@ -21,7 +22,6 @@ export const NetworkTestButton: React.FC<NetworkTestButtonProps> = ({ style }) =
       
       // Déclencher une synchronisation immédiate après ajout à la queue
       try {
-        const { syncService } = await import('../services/SyncService');
         console.log('🔄 [TEST] Déclenchement synchronisation immédiate...');
         await syncService.forceSync();
       } catch (error) {

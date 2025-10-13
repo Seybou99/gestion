@@ -1,0 +1,10 @@
+{
+  "navigation": {
+    "accueil": "Accueil",
+    "articles": "Articles", 
+    "stock": "Stock",
+    "ventes": "Ventes",
+    "profil": "Profil",
+    "plus": "Plus"
+  }
+}

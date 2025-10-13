@@ -1,45 +1,29 @@
 {
   "expo": {
     "name": "SmartStock",
-    "slug": "SmartStock",
+    "slug": "smartstock",
     "version": "1.0.0",
     "orientation": "portrait",
-    "scheme": "SmartStock",
+    "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
-    "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/images/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.betoatexpo.SmartStock",
-      "appleTeamId": "T2A8YY9YDW",
-      "icon": "./assets/icon.icon"
+      "bundleIdentifier": "com.smartstock.app"
     },
     "android": {
       "adaptiveIcon": {
-        "foregroundImage": "./assets/images/adaptive-icon.png",
+        "foregroundImage": "./assets/icon.png",
         "backgroundColor": "#ffffff"
       },
-      "edgeToEdgeEnabled": true,
-      "package": "com.betoatexpo.expouiplayground"
-    },
-    "web": {
-      "bundler": "metro",
-      "output": "static",
-      "favicon": "./assets/images/favicon.png"
+      "package": "com.smartstock.app"
     },
     "plugins": [
-      "expo-router",
-      [
-        "expo-splash-screen",
-        {
-          "image": "./assets/images/splash-icon.png",
-          "imageWidth": 200,
-          "resizeMode": "contain",
-          "backgroundColor": "#ffffff"
-        }
-      ],
-      "expo-font",
-      "expo-web-browser",
-      "expo-video"
+      "expo-router"
     ],
     "experiments": {
       "typedRoutes": true

@@ -20,13 +20,17 @@ export const FIREBASE_ENABLED = process.env.EXPO_PUBLIC_FIREBASE_ENABLED !== 'fa
 export const FIREBASE_TIMEOUT = 3000; // 3 secondes au lieu de 5
 export const FIREBASE_RETRY_COUNT = 1; // Moins de tentatives
 
-// Mode test offline (pour développement)
+// Mode test offline (pour développement) - DÉSACTIVÉ PAR DÉFAUT
 export let FORCE_OFFLINE_MODE = false;
 
 export const setOfflineMode = (offline: boolean) => {
   FORCE_OFFLINE_MODE = offline;
   console.log(`🌐 Mode ${offline ? 'OFFLINE' : 'ONLINE'} activé manuellement`);
 };
+
+// Forcer le mode ONLINE au démarrage
+setOfflineMode(false);
+console.log('🌐 Mode ONLINE forcé au démarrage de l\'application');
 
 console.log('🔥 Configuration Firebase:', {
   enabled: FIREBASE_ENABLED,

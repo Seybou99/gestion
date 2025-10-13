@@ -1,11 +1,14 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { store } from '../store';
+import { fetchCategories } from '../store/slices/categorySlice';
 import {
-  addSyncError,
-  setLastSync,
-  setPendingOperations,
-  setSyncInProgress
+    addSyncError,
+    setLastSync,
+    setPendingOperations,
+    setSyncInProgress
 } from '../store/slices/syncSlice';
 import { getFirebaseId, isValidFirebaseId } from '../utils/firebaseIdMapper';
+import { syncCategoriesToLocal } from '../utils/syncFirebaseToLocal';
 import { databaseService, SyncOperation } from './DatabaseService';
 import { firebaseService } from './FirebaseService';
 
@@ -85,7 +88,10 @@ class SyncService {
     this.syncInProgress = true;
     store.dispatch(setSyncInProgress(true));
 
-    console.log('🔄 Démarrage de la synchronisation...');
+    // console.log('🔄 Démarrage de la synchronisation...');
+    
+    // Réinitialiser les opérations en erreur au début de chaque synchronisation
+    await this.resetErrorOperations();
 
     try {
       // 1. Récupérer les données du serveur
@@ -98,9 +104,9 @@ class SyncService {
       await databaseService.updateLastSyncTimestamp();
       store.dispatch(setLastSync(new Date().toISOString()));
       
-      console.log('✅ Synchronisation terminée avec succès');
+      // console.log('✅ Synchronisation terminée avec succès');
     } catch (error) {
-      console.error('❌ Erreur de synchronisation:', error);
+      // console.error('❌ Erreur de synchronisation:', error);
       store.dispatch(addSyncError(error instanceof Error ? error.message : 'Erreur inconnue'));
     } finally {
       this.syncInProgress = false;
@@ -113,7 +119,7 @@ class SyncService {
     try {
       const lastSync = await databaseService.getLastSyncTimestamp();
       
-      console.log('📥 Récupération des mises à jour depuis Firebase...');
+      // console.log('📥 Récupération des mises à jour depuis Firebase...');
       
       // Vérifier que firebaseService est disponible
       if (!firebaseService) {
@@ -121,7 +127,19 @@ class SyncService {
         return;
       }
       
-      // Récupérer les mises à jour depuis Firebase
+      // 1. SYNCHRONISER LES CATÉGORIES EN PREMIER (automatique)
+      try {
+        await syncCategoriesToLocal();
+        console.log('✅ [AUTO SYNC] Catégories synchronisées automatiquement');
+        
+        // Rafraîchir le store Redux des catégories après la synchronisation
+        store.dispatch(fetchCategories());
+      } catch (error) {
+        console.error('❌ [AUTO SYNC] Erreur synchronisation automatique des catégories:', error);
+        // Continuer même si la synchro des catégories échoue
+      }
+      
+      // 2. Récupérer les mises à jour depuis Firebase
       const updates = await firebaseService.getUpdatesSince(lastSync);
 
       // Appliquer les mises à jour
@@ -129,9 +147,9 @@ class SyncService {
         await this.applyServerUpdate(update);
       }
 
-      console.log(`📥 ${updates.length} mises à jour reçues de Firebase`);
+      // console.log(`📥 ${updates.length} mises à jour reçues de Firebase`);
     } catch (error) {
-      console.error('❌ Erreur pull:', error);
+      // console.error('❌ Erreur pull:', error);
       throw error;
     }
   }
@@ -143,11 +161,11 @@ class SyncService {
       store.dispatch(setPendingOperations(pendingOperations.length));
       
       if (pendingOperations.length === 0) {
-        console.log('📤 Aucune opération en attente');
+        // console.log('📤 Aucune opération en attente');
         return;
       }
 
-      console.log(`📤 ${pendingOperations.length} opérations en attente`);
+      // console.log(`📤 ${pendingOperations.length} opérations en attente`);
 
       // Trier par priorité (1 = haute, 3 = basse)
       pendingOperations.sort((a, b) => a.priority - b.priority);
@@ -159,9 +177,9 @@ class SyncService {
         await this.processBatch(batch);
       }
 
-      console.log('📤 Toutes les opérations ont été envoyées');
+      // console.log('📤 Toutes les opérations ont été envoyées');
     } catch (error) {
-      console.error('❌ Erreur push:', error);
+      // console.error('❌ Erreur push:', error);
       throw error;
     }
   }
@@ -248,12 +266,92 @@ class SyncService {
             console.log(`🔍 [SYNC DEBUG] Création stock avec données:`, parsedData);
             const firebaseId = await firebaseService.createStock(parsedData);
             console.log(`✅ Stock créé dans Firebase: ${firebaseId}`);
+            
+            // IMPORTANT: Remplacer l'ID local par l'ID Firebase pour cohérence
+            // 1. Récupérer les données complètes du stock local
+            const localStock = await databaseService.getById('stock', record_id);
+            
+            // 2. Supprimer l'ancien stock avec l'ID local
+            await databaseService.delete('stock', record_id);
+            console.log(`🗑️ [ID SYNC] Ancien stock local supprimé: ${record_id}`);
+            
+            // 3. Créer un nouveau stock avec l'ID Firebase
+            const existing = await AsyncStorage.getItem('stock');
+            const items = existing ? JSON.parse(existing) : [];
+            items.push({
+              ...localStock,
+              id: firebaseId, // ID Firebase comme ID local
+              firebase_id: firebaseId,
+              sync_status: 'synced'
+            });
+            await AsyncStorage.setItem('stock', JSON.stringify(items));
+            
+            // 4. Invalider le cache
+            databaseService.invalidateCache('stock');
+            
+            console.log(`✅ [ID SYNC] Stock recréé avec ID Firebase: ${firebaseId}`);
+          } else if (table_name === 'sales') {
+            console.log(`🔍 [SYNC DEBUG] Création vente avec données:`, parsedData);
+            const firebaseId = await firebaseService.createSale(parsedData);
+            console.log(`✅ Vente créée dans Firebase: ${firebaseId}`);
             // Mettre à jour le statut local
-            await databaseService.update('stock', record_id, { 
+            await databaseService.update('sales', record_id, { 
               sync_status: 'synced',
               firebase_id: firebaseId 
             });
             console.log(`✅ Statut local mis à jour pour ${record_id}`);
+          } else if (table_name === 'customers') {
+            console.log(`🔍 [SYNC DEBUG] Création client avec données:`, parsedData);
+            const firebaseId = await firebaseService.createCustomer(parsedData);
+            console.log(`✅ Client créé dans Firebase: ${firebaseId}`);
+            // Mettre à jour le statut local
+            await databaseService.update('customers', record_id, { 
+              sync_status: 'synced',
+              firebase_id: firebaseId 
+            });
+            console.log(`✅ Statut local mis à jour pour ${record_id} avec firebase_id: ${firebaseId}`);
+          } else if (table_name === 'locations') {
+            console.log(`🔍 [SYNC DEBUG] Création emplacement avec données:`, parsedData);
+            const firebaseId = await firebaseService.createLocation(parsedData);
+            console.log(`✅ Emplacement créé dans Firebase: ${firebaseId}`);
+            
+            // IMPORTANT: Remplacer l'ID local par l'ID Firebase
+            const localLocation = await databaseService.getById('locations', record_id);
+            await databaseService.delete('locations', record_id);
+            
+            const existing = await AsyncStorage.getItem('locations');
+            const items = existing ? JSON.parse(existing) : [];
+            items.push({
+              ...localLocation,
+              id: firebaseId,
+              firebase_id: firebaseId,
+              sync_status: 'synced'
+            });
+            await AsyncStorage.setItem('locations', JSON.stringify(items));
+            databaseService.invalidateCache('locations');
+            
+            console.log(`✅ [ID SYNC] Emplacement recréé avec ID Firebase: ${firebaseId}`);
+          } else if (table_name === 'inventory') {
+            console.log(`🔍 [SYNC DEBUG] Création inventaire avec données:`, parsedData);
+            const firebaseId = await firebaseService.createInventory(parsedData);
+            console.log(`✅ Inventaire créé dans Firebase: ${firebaseId}`);
+            
+            // IMPORTANT: Remplacer l'ID local par l'ID Firebase
+            const localInventory = await databaseService.getById('inventory', record_id);
+            await databaseService.delete('inventory', record_id);
+            
+            const existing = await AsyncStorage.getItem('inventory');
+            const items = existing ? JSON.parse(existing) : [];
+            items.push({
+              ...localInventory,
+              id: firebaseId,
+              firebase_id: firebaseId,
+              sync_status: 'synced'
+            });
+            await AsyncStorage.setItem('inventory', JSON.stringify(items));
+            databaseService.invalidateCache('inventory');
+            
+            console.log(`✅ [ID SYNC] Inventaire recréé avec ID Firebase: ${firebaseId}`);
           } else {
             console.log(`⚠️ [SYNC DEBUG] Table non supportée pour CREATE: ${table_name}`);
           }
@@ -286,20 +384,61 @@ class SyncService {
                   console.log(`✅ Catégorie mise à jour dans Firebase: ${record_id}`);
                 }
                 await databaseService.update('categories', record_id, { sync_status: 'synced' });
-              } else if (table_name === 'stock') {
-                // Utiliser l'utilitaire pour obtenir l'ID Firebase
-                const firebaseId = await getFirebaseId(record_id);
+            } else if (table_name === 'stock') {
+              // Pour le stock, chercher par product_id au lieu de l'ID du stock
+              console.log(`🔍 [STOCK UPDATE] Recherche stock par product_id: ${parsedData.product_id}`);
+              
+              try {
+                // Chercher le stock dans Firebase par product_id
+                const stockInFirebase = await firebaseService.getStockByProduct(parsedData.product_id);
                 
-                if (firebaseId) {
-                  await firebaseService.updateStock(firebaseId, parsedData);
-                  console.log(`✅ Stock mis à jour dans Firebase: ${firebaseId}`);
+                if (stockInFirebase) {
+                  // Mettre à jour le stock existant
+                  console.log(`✅ [STOCK UPDATE] Stock trouvé dans Firebase: ${stockInFirebase.id}`);
+                  await firebaseService.updateStockByProductId(parsedData.product_id, parsedData);
+                  console.log(`✅ Stock mis à jour dans Firebase pour product_id: ${parsedData.product_id}`);
                 } else {
-                  console.log(`⚠️ Pas de firebase_id trouvé pour ${record_id}, tentative avec ID local`);
-                  await firebaseService.updateStock(record_id, parsedData);
-                  console.log(`✅ Stock mis à jour dans Firebase: ${record_id}`);
+                  // Créer le stock s'il n'existe pas
+                  console.log(`⚠️ [STOCK UPDATE] Stock non trouvé, création...`);
+                  const newStockId = await firebaseService.createStock(parsedData);
+                  console.log(`✅ Stock créé dans Firebase: ${newStockId}`);
+                  // Sauvegarder le firebase_id localement
+                  await databaseService.update('stock', record_id, { 
+                    sync_status: 'synced',
+                    firebase_id: newStockId 
+                  });
                 }
                 await databaseService.update('stock', record_id, { sync_status: 'synced' });
+              } catch (error) {
+                // Ne pas afficher d'erreur si c'est le mode offline (comportement normal)
+                if (error instanceof Error && !error.message.includes('Mode offline')) {
+                  console.error(`❌ [STOCK UPDATE] Erreur:`, error);
+                }
+                throw error;
               }
+            } else if (table_name === 'locations') {
+              const firebaseId = await getFirebaseId(record_id);
+              
+              if (firebaseId) {
+                await firebaseService.updateLocation(firebaseId, parsedData);
+                console.log(`✅ Emplacement mis à jour dans Firebase: ${firebaseId}`);
+              } else {
+                await firebaseService.updateLocation(record_id, parsedData);
+                console.log(`✅ Emplacement mis à jour dans Firebase: ${record_id}`);
+              }
+              await databaseService.update('locations', record_id, { sync_status: 'synced' });
+            } else if (table_name === 'inventory') {
+              const firebaseId = await getFirebaseId(record_id);
+              
+              if (firebaseId) {
+                await firebaseService.updateInventory(firebaseId, parsedData);
+                console.log(`✅ Inventaire mis à jour dans Firebase: ${firebaseId}`);
+              } else {
+                await firebaseService.updateInventory(record_id, parsedData);
+                console.log(`✅ Inventaire mis à jour dans Firebase: ${record_id}`);
+              }
+              await databaseService.update('inventory', record_id, { sync_status: 'synced' });
+            }
               break;
           
         case 'delete':
@@ -317,6 +456,21 @@ class SyncService {
                 console.log(`✅ Produit supprimé de Firebase avec ID local: ${record_id} -> ${firebaseId}`);
               } else {
                 console.log(`⚠️ Aucun ID Firebase trouvé pour ${record_id}, produit probablement créé en mode offline uniquement`);
+              }
+            }
+          } else if (table_name === 'stock') {
+            if (isValidFirebaseId(record_id)) {
+              // C'est un ID Firebase, suppression directe
+              await firebaseService.deleteStock(record_id);
+              console.log(`✅ Stock supprimé de Firebase: ${record_id}`);
+            } else {
+              // C'est un ID local, chercher l'ID Firebase correspondant
+              const firebaseId = await getFirebaseId(record_id);
+              if (firebaseId) {
+                await firebaseService.deleteStock(firebaseId);
+                console.log(`✅ Stock supprimé de Firebase avec ID local: ${record_id} -> ${firebaseId}`);
+              } else {
+                console.log(`⚠️ Aucun ID Firebase trouvé pour ${record_id}, stock probablement créé en mode offline uniquement`);
               }
             }
           } else if (table_name === 'categories') {
@@ -351,6 +505,81 @@ class SyncService {
                 console.log(`⚠️ Aucun ID Firebase trouvé pour ${record_id}, stock probablement créé en mode offline uniquement`);
               }
             }
+          } else if (table_name === 'customers') {
+            // Pour la suppression, vérifier si l'ID est un ID Firebase ou local
+            if (isValidFirebaseId(record_id)) {
+              // C'est un ID Firebase, suppression directe
+              await firebaseService.deleteCustomer(record_id);
+              console.log(`✅ Client supprimé de Firebase: ${record_id}`);
+            } else {
+              // C'est un ID local, chercher l'ID Firebase correspondant
+              const firebaseId = await getFirebaseId(record_id);
+              if (firebaseId) {
+                await firebaseService.deleteCustomer(firebaseId);
+                console.log(`✅ Client supprimé de Firebase avec ID local: ${record_id} -> ${firebaseId}`);
+                
+                // Supprimer définitivement le client local après suppression réussie dans Firebase
+                await databaseService.delete('customers', record_id);
+                console.log(`🗑️ Client local supprimé définitivement: ${record_id}`);
+              } else {
+                console.log(`⚠️ Aucun ID Firebase trouvé pour ${record_id}, client probablement créé en mode offline uniquement`);
+                
+                // Supprimer le client local même s'il n'existe pas dans Firebase
+                await databaseService.delete('customers', record_id);
+                console.log(`🗑️ Client local supprimé (n'existait pas dans Firebase): ${record_id}`);
+              }
+            }
+          } else if (table_name === 'locations') {
+            if (isValidFirebaseId(record_id)) {
+              await firebaseService.deleteLocation(record_id);
+              console.log(`✅ Emplacement supprimé de Firebase: ${record_id}`);
+            } else {
+              // Pour les suppressions, utiliser le firebase_id des données si disponible
+              let firebaseId = null;
+              if (parsedData && parsedData.firebase_id) {
+                firebaseId = parsedData.firebase_id;
+                console.log(`🔍 [SYNC DEBUG] Utilisation firebase_id des données: ${firebaseId}`);
+              } else {
+                // Fallback: chercher l'ID Firebase (peut ne pas fonctionner si l'item a été supprimé localement)
+                firebaseId = await getFirebaseId(record_id);
+              }
+              
+              if (firebaseId) {
+                await firebaseService.deleteLocation(firebaseId);
+                console.log(`✅ Emplacement supprimé de Firebase avec ID local: ${record_id} -> ${firebaseId}`);
+              } else {
+                console.log(`⚠️ Aucun ID Firebase trouvé pour ${record_id}, emplacement probablement créé en mode offline uniquement`);
+              }
+            }
+          } else if (table_name === 'inventory') {
+            console.log(`🔍 [SYNC DEBUG] Traitement suppression inventaire: ${record_id}`);
+            console.log(`🔍 [SYNC DEBUG] Données reçues:`, parsedData);
+            
+            if (isValidFirebaseId(record_id)) {
+              console.log(`🔍 [SYNC DEBUG] ID Firebase détecté, suppression directe: ${record_id}`);
+              await firebaseService.deleteInventory(record_id);
+              console.log(`✅ Inventaire supprimé de Firebase: ${record_id}`);
+            } else {
+              // Pour les suppressions, utiliser le firebase_id des données si disponible
+              let firebaseId = null;
+              if (parsedData && parsedData.firebase_id) {
+                firebaseId = parsedData.firebase_id;
+                console.log(`🔍 [SYNC DEBUG] Utilisation firebase_id des données: ${firebaseId}`);
+              } else {
+                // Fallback: chercher l'ID Firebase (peut ne pas fonctionner si l'item a été supprimé localement)
+                console.log(`🔍 [SYNC DEBUG] Recherche firebase_id pour ID local: ${record_id}`);
+                firebaseId = await getFirebaseId(record_id);
+                console.log(`🔍 [SYNC DEBUG] firebase_id trouvé: ${firebaseId}`);
+              }
+              
+              if (firebaseId) {
+                console.log(`🔍 [SYNC DEBUG] Tentative suppression Firebase avec ID: ${firebaseId}`);
+                await firebaseService.deleteInventory(firebaseId);
+                console.log(`✅ Inventaire supprimé de Firebase avec ID local: ${record_id} -> ${firebaseId}`);
+              } else {
+                console.log(`⚠️ Aucun ID Firebase trouvé pour ${record_id}, inventaire probablement créé en mode offline uniquement`);
+              }
+            }
           }
           break;
           
@@ -363,7 +592,7 @@ class SyncService {
       if (error instanceof Error && error.message.includes('Mode offline')) {
         console.log(`📱 Mode offline - opération ${op} pour ${table_name}:${record_id} reportée (normal)`);
       } else {
-        console.error(`❌ Erreur envoi opération ${op} pour ${table_name}:${record_id}:`, error);
+        // console.error(`❌ Erreur envoi opération ${op} pour ${table_name}:${record_id}:`, error);
       }
       throw error; // Re-lancer pour que la gestion d'erreur parente fonctionne
     }
@@ -397,12 +626,128 @@ class SyncService {
     console.log(`✅ Opération ${operation.operation} synchronisée pour ${table_name}:${record_id}`);
   }
 
+  // Nettoyer les opérations en erreur (supprimer au lieu de réinitialiser)
+  async cleanErrorOperations(): Promise<void> {
+    try {
+      console.log('🧹 [CLEANUP] Nettoyage des opérations en erreur...');
+      
+      // Récupérer toutes les opérations en erreur
+      const errorOperations = await databaseService.query(
+        'SELECT * FROM sync_queue WHERE status = ?',
+        ['error']
+      ) as SyncOperation[];
+      
+      if (errorOperations.length === 0) {
+        console.log('✅ [CLEANUP] Aucune opération en erreur à nettoyer');
+        return;
+      }
+      
+      console.log(`🧹 [CLEANUP] ${errorOperations.length} opérations en erreur trouvées`);
+      
+      // Supprimer chaque opération en erreur
+      for (const operation of errorOperations) {
+        await databaseService.delete('sync_queue', operation.id);
+        console.log(`🗑️ [CLEANUP] Opération ${operation.id} supprimée (${operation.table_name}:${operation.record_id})`);
+      }
+      
+      console.log(`✅ [CLEANUP] ${errorOperations.length} opérations nettoyées avec succès`);
+    } catch (error) {
+      console.error('❌ [CLEANUP] Erreur lors du nettoyage des opérations:', error);
+    }
+  }
+
+  // Réinitialiser les opérations en erreur lors du passage en mode online
+  async resetErrorOperations(): Promise<void> {
+    try {
+      console.log('🔄 [ONLINE] Réinitialisation des opérations en erreur...');
+      
+      // Récupérer toutes les opérations en erreur
+      const errorOperations = await databaseService.query(
+        'SELECT * FROM sync_queue WHERE status = ?',
+        ['error']
+      ) as SyncOperation[];
+      
+      if (errorOperations.length === 0) {
+        console.log('✅ [ONLINE] Aucune opération en erreur à réinitialiser');
+        return;
+      }
+      
+      console.log(`🔄 [ONLINE] ${errorOperations.length} opérations en erreur trouvées`);
+      
+      // Vérifier si l'opération est valide avant de la réinitialiser
+      for (const operation of errorOperations) {
+        try {
+          // Vérifier si l'enregistrement existe encore localement
+          const record = await databaseService.getById(operation.table_name, operation.record_id);
+          
+          if (!record) {
+            // L'enregistrement n'existe plus, supprimer l'opération
+            await databaseService.delete('sync_queue', operation.id);
+            console.log(`🗑️ [ONLINE] Opération ${operation.id} supprimée (enregistrement introuvable)`);
+            continue;
+          }
+          
+          // L'enregistrement existe, réinitialiser l'opération
+          await databaseService.update('sync_queue', operation.id, {
+            status: 'pending',
+            retry_count: 0,
+            error_message: null,
+          });
+          console.log(`✅ [ONLINE] Opération ${operation.id} réinitialisée (${operation.table_name}:${operation.record_id})`);
+        } catch (err) {
+          // En cas d'erreur, supprimer l'opération
+          await databaseService.delete('sync_queue', operation.id);
+          console.log(`🗑️ [ONLINE] Opération ${operation.id} supprimée (erreur: ${err})`);
+        }
+      }
+      
+      console.log(`✅ [ONLINE] Opérations traitées avec succès`);
+    } catch (error) {
+      console.error('❌ [ONLINE] Erreur lors de la réinitialisation des opérations:', error);
+    }
+  }
+
   // Gérer les erreurs de synchronisation
   private async handleSyncError(operation: SyncOperation, error: any) {
     const newRetryCount = operation.retry_count + 1;
     
     // Masquer les erreurs de mode offline qui sont normales
     const isOfflineError = error instanceof Error && error.message.includes('Mode offline');
+    
+    // Vérifier si c'est une erreur de document introuvable
+    const isNotFoundError = error instanceof Error && (
+      error.message.includes('Item avec l\'id') ||
+      error.message.includes('non trouvé') ||
+      error.message.includes('Document stock introuvable')
+    );
+    
+    // Vérifier si c'est une erreur de doublon
+    const isDuplicateError = error instanceof Error && (
+      error.message.includes('existe déjà dans Firebase') ||
+      error.message.includes('SKU') && error.message.includes('existe déjà')
+    );
+    
+    // Si le document n'existe pas, supprimer l'opération immédiatement
+    if (isNotFoundError) {
+      await databaseService.delete('sync_queue', operation.id);
+      console.log(`🗑️ Opération ${operation.id} supprimée (document introuvable)`);
+      return;
+    }
+    
+    // Si c'est un doublon, supprimer l'opération et marquer comme synchronisé
+    if (isDuplicateError) {
+      await databaseService.delete('sync_queue', operation.id);
+      console.log(`⚠️ Opération ${operation.id} supprimée (doublon détecté): ${error.message}`);
+      
+      // Marquer le produit local comme synchronisé
+      if (operation.table_name === 'products') {
+        await databaseService.update('products', operation.record_id, {
+          sync_status: 'synced'
+        });
+        console.log(`✅ Produit ${operation.record_id} marqué comme synchronisé (doublon)`);
+      }
+      return;
+    }
     
     if (newRetryCount >= this.config.maxRetries) {
       // Marquer comme erreur définitive
@@ -495,6 +840,10 @@ class SyncService {
   // Forcer une synchronisation immédiate
   async forceSync() {
     console.log('🔄 Synchronisation forcée');
+    
+    // Réinitialiser les opérations en erreur avant de synchroniser
+    await this.resetErrorOperations();
+    
     await this.startSync();
   }
 

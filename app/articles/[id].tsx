@@ -91,12 +91,12 @@ export default function ArticleDetailsScreen() {
       } else {
         console.log('❌ [DETAILS] Produit non trouvé');
         Alert.alert('Erreur', 'Produit non trouvé');
-        router.back();
+        router.replace('/articles');
       }
     } catch (error) {
       console.error('❌ [DETAILS] Erreur chargement produit:', error);
       Alert.alert('Erreur', 'Impossible de charger le produit');
-      router.back();
+      router.replace('/articles');
     } finally {
       setLoading(false);
     }
@@ -207,7 +207,7 @@ export default function ArticleDetailsScreen() {
         [
           {
             text: 'OK',
-            onPress: () => router.back()
+            onPress: () => router.replace('/articles')
           }
         ]
       );
@@ -234,7 +234,7 @@ export default function ArticleDetailsScreen() {
     return (
       <View style={styles.container}>
         <View style={styles.header}>
-          <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
+          <TouchableOpacity onPress={() => router.replace('/articles')} style={styles.backButton}>
             <Text style={styles.backButtonText}>← Retour</Text>
           </TouchableOpacity>
         </View>
@@ -249,7 +249,7 @@ export default function ArticleDetailsScreen() {
     return (
       <View style={styles.container}>
         <View style={styles.header}>
-          <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
+          <TouchableOpacity onPress={() => router.replace('/articles')} style={styles.backButton}>
             <Text style={styles.backButtonText}>← Retour</Text>
           </TouchableOpacity>
         </View>
@@ -350,7 +350,7 @@ export default function ArticleDetailsScreen() {
               <View style={styles.pricingItem}>
                 <Text style={styles.label}>Marge</Text>
                 <Text style={[styles.value, styles.marginValue]}>
-                  {product.margin.toFixed(2)}%
+                  {product.margin != null ? product.margin.toFixed(2) : '0.00'}%
                 </Text>
               </View>
             </View>

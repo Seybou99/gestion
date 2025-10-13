@@ -38,6 +38,7 @@ export interface Stock {
 
 export interface Sale {
   id: string;
+  user_id: string;        // ID de l'utilisateur qui effectue la vente
   customer_id?: string;
   location_id: string;
   total_amount: number;
@@ -46,10 +47,12 @@ export interface Sale {
   payment_method: string;
   payment_status: 'paid' | 'pending' | 'refunded';
   sale_date: string;
-  created_by: string;
+  created_by: string;     // Nom de l'utilisateur
   notes?: string;
   sync_status: 'synced' | 'pending' | 'error';
   sync_timestamp?: string;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface Category {
@@ -87,6 +90,52 @@ export interface Customer {
   sync_status: 'synced' | 'pending' | 'error';
 }
 
+export interface Location {
+  id: string;
+  name: string;                    // Nom de l'emplacement
+  address: string;                 // Adresse complète
+  location_type: 'warehouse' | 'store' | 'supplier';  // Type d'emplacement
+  contact_person?: string;         // Personne de contact
+  phone?: string;                  // Téléphone
+  is_active: boolean;              // Actif ou non
+  created_at: string;
+  updated_at: string;
+  sync_status: 'synced' | 'pending' | 'error';
+  firebase_id?: string;
+}
+
+export interface Inventory {
+  id: string;
+  product_id: string;              // Référence au produit
+  location_id: string;             // Référence à l'emplacement (entrepôt/magasin)
+  quantity_available: number;      // Quantité disponible
+  quantity_reserved: number;       // Quantité réservée
+  quantity_min: number;            // Seuil minimum (alerte)
+  quantity_max: number;            // Capacité maximum
+  last_movement_date?: string;     // Dernier mouvement
+  last_movement_type?: string;     // Type : initial, sale, transfer, purchase
+  created_at: string;
+  updated_at: string;
+  sync_status: 'synced' | 'pending' | 'error';
+  firebase_id?: string;
+}
+
+export interface Transfer {
+  id: string;
+  from_location_id: string;        // Emplacement source
+  to_location_id: string;          // Emplacement destination
+  product_id: string;              // Produit transféré
+  quantity: number;                // Quantité transférée
+  transfer_date: string;           // Date du transfert
+  status: 'pending' | 'completed' | 'cancelled';
+  notes?: string;                  // Notes optionnelles
+  created_by: string;              // Utilisateur ayant créé le transfert
+  created_at: string;
+  updated_at: string;
+  sync_status: 'synced' | 'pending' | 'error';
+  firebase_id?: string;
+}
+
 export interface SyncOperation {
   id: string;
   table_name: string;
@@ -111,6 +160,9 @@ export interface DatabaseService {
   getById<T>(table: string, id: string): Promise<T | null>;
   getAll<T>(table: string): Promise<T[]>;
   execute(sql: string, params?: any[]): Promise<void>;
+  
+  // Méthode pour forcer l'invalidation du cache
+  invalidateCache(table?: string): void;
 }
 
 // Implémentation simplifiée avec AsyncStorage
@@ -363,6 +415,17 @@ class DatabaseServiceImpl implements DatabaseService {
       last_sync: timestamp,
     }]));
   }
+  
+  // Méthode pour forcer l'invalidation du cache
+  invalidateCache(table?: string): void {
+    if (table) {
+      this.cache.delete(table);
+      console.log(`🗑️ Cache invalidé pour ${table}`);
+    } else {
+      this.cache.clear();
+      console.log('🗑️ Cache complètement invalidé');
+    }
+  }
 }
 
 // Instance singleton
@@ -383,45 +446,35 @@ export const seedTestData = async () => {
       sync_status: 'synced' as const,
     });
 
-    // Créer des clients de test
-    const customers = [
-      {
-        name: 'Marie Diallo',
-        phone: '+223 6 12 34 56 78',
-        email: 'marie.diallo@email.com',
-        address: 'Bamako, Mali',
-        customer_type: 'retail' as const,
-        credit_limit: 100000,
-        credit_balance: 0,
-        created_at: new Date().toISOString(),
-        sync_status: 'synced' as const,
-      },
-      {
-        name: 'Amadou Traoré',
-        phone: '+223 7 23 45 67 89',
-        email: 'amadou.traore@email.com',
-        address: 'Ségou, Mali',
-        customer_type: 'wholesale' as const,
-        credit_limit: 500000,
-        credit_balance: 25000,
-        created_at: new Date().toISOString(),
-        sync_status: 'synced' as const,
-      },
-    ];
-
-    const customerIds: string[] = [];
-    for (const customer of customers) {
-      const id = await databaseService.insert('customers', customer);
-      customerIds.push(id);
-    }
-
     console.log('✅ Données de test générées avec succès');
-    console.log(`👥 ${customerIds.length} clients créés`);
     console.log(`🏪 1 emplacement créé`);
-    console.log('📂 Les catégories doivent être créées via l\'interface utilisateur');
+    console.log('📂 Les catégories et clients doivent être créés via l\'interface utilisateur');
 
   } catch (error) {
     console.error('❌ Erreur génération données de test:', error);
+    throw error;
+  }
+};
+
+// Fonction utilitaire pour initialiser l'entrepôt d'un produit
+export const initializeWarehouse = async (productId: string, initialQuantity: number = 0) => {
+  try {
+    const warehouseId = await databaseService.insert('warehouse', {
+      product_id: productId,
+      quantity_available: initialQuantity,
+      quantity_reserved: 0,
+      warehouse_min: 50,              // Alerte si < 50 unités
+      warehouse_max: 5000,            // Capacité max 5000 unités
+      location: 'Entrepôt Principal',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      sync_status: 'pending' as const,
+    });
+    
+    console.log(`🏢 Entrepôt initialisé pour produit ${productId}: ${warehouseId}`);
+    return warehouseId;
+  } catch (error) {
+    console.error('❌ Erreur initialisation entrepôt:', error);
     throw error;
   }
 };
