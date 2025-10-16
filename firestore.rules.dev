@@ -1,0 +1,16 @@
+rules_version = '2';
+
+// Règles Firestore pour le DÉVELOPPEMENT
+// ATTENTION : Ces règles donnent un accès complet à tous les utilisateurs authentifiés
+// NE PAS utiliser en production !
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // MODE DÉVELOPPEMENT : Tout utilisateur authentifié peut lire/écrire partout
+    match /{document=**} {
+      allow read, write: if request.auth != null;
+    }
+  }
+}
+

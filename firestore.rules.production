@@ -1,0 +1,80 @@
+rules_version = '2';
+
+// Règles Firestore pour la PRODUCTION
+// Chaque utilisateur ne voit que SES propres données
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Règles pour les produits - L'utilisateur ne voit que SES produits
+    match /products/{document} {
+      allow read, write: if request.auth != null && 
+        (resource == null || resource.data.created_by == request.auth.uid);
+    }
+    
+    // Règles pour le stock - L'utilisateur ne voit que SES stocks
+    match /stock/{document} {
+      allow read, write: if request.auth != null && 
+        (resource == null || resource.data.created_by == request.auth.uid);
+    }
+    
+    // Règles pour les ventes - L'utilisateur ne voit que SES ventes
+    match /sales/{document} {
+      allow read, write: if request.auth != null && 
+        (resource == null || resource.data.user_id == request.auth.uid);
+    }
+    
+    // Règles pour les clients - L'utilisateur ne voit que SES clients
+    match /customers/{document} {
+      allow read, write: if request.auth != null && 
+        (resource == null || resource.data.created_by == request.auth.uid);
+    }
+    
+    // Règles pour l'inventaire - L'utilisateur ne voit que SES inventaires
+    match /inventory/{document} {
+      allow read, write: if request.auth != null && 
+        (resource == null || resource.data.created_by == request.auth.uid);
+    }
+    
+    // Règles pour les catégories - L'utilisateur ne voit que SES catégories
+    match /categories/{document} {
+      allow read, write: if request.auth != null && 
+        (resource == null || resource.data.created_by == request.auth.uid);
+    }
+    
+    // Règles pour les emplacements - L'utilisateur ne voit que SES emplacements
+    match /locations/{document} {
+      allow read, write: if request.auth != null && 
+        (resource == null || resource.data.created_by == request.auth.uid);
+    }
+    
+    // Règles pour les éléments de vente
+    match /sale_items/{document} {
+      allow read, write: if request.auth != null;
+    }
+    
+    // Règles pour les mouvements de stock - L'utilisateur ne voit que SES mouvements
+    match /stock_movements/{document} {
+      allow read, write: if request.auth != null && 
+        (resource == null || resource.data.created_by == request.auth.uid);
+    }
+    
+    // Règles pour les entrées de stock - L'utilisateur ne voit que SES entrées
+    match /stock_entries/{document} {
+      allow read, write: if request.auth != null && 
+        (resource == null || resource.data.created_by == request.auth.uid);
+    }
+    
+    // Règles pour les ajustements de stock - L'utilisateur ne voit que SES ajustements
+    match /stock_adjustments/{document} {
+      allow read, write: if request.auth != null && 
+        (resource == null || resource.data.created_by == request.auth.uid);
+    }
+    
+    // Règles pour les transferts - L'utilisateur ne voit que SES transferts
+    match /transfers/{document} {
+      allow read, write: if request.auth != null && 
+        (resource == null || resource.data.created_by == request.auth.uid);
+    }
+  }
+}
