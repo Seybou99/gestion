@@ -1,19 +1,22 @@
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useRouter } from 'expo-router';
-import { useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
-    ActivityIndicator,
-    Alert,
-    Dimensions,
-    FlatList,
-    Modal,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View,
+  ActivityIndicator,
+  Alert,
+  Dimensions,
+  FlatList,
+  Keyboard,
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from 'react-native';
 import { useSelector } from 'react-redux';
 import { ClearDataButton } from '../../components/ClearDataButton';
@@ -70,6 +73,8 @@ export default function EntrepotsScreen() {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [showSearchBar, setShowSearchBar] = useState(false);
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
+  const scrollViewRef = React.useRef<ScrollView>(null);
   
   // Formulaire de création
   const [newLocation, setNewLocation] = useState({
@@ -84,6 +89,34 @@ export default function EntrepotsScreen() {
     loadLocations();
   }, []);
 
+  // Gestion du clavier pour le modal
+  useEffect(() => {
+    if (!showCreateModal) return;
+
+    const keyboardWillShow = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow',
+      (event) => {
+        setKeyboardHeight(event.endCoordinates.height);
+        // Scroller vers le bas après un court délai pour laisser le clavier s'ouvrir
+        setTimeout(() => {
+          scrollViewRef.current?.scrollToEnd({ animated: true });
+        }, 100);
+      }
+    );
+
+    const keyboardWillHide = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide',
+      () => {
+        setKeyboardHeight(0);
+      }
+    );
+
+    return () => {
+      keyboardWillShow.remove();
+      keyboardWillHide.remove();
+    };
+  }, [showCreateModal]);
+
   const loadLocations = async () => {
     try {
       setLoading(true);
@@ -95,7 +128,17 @@ export default function EntrepotsScreen() {
           console.warn('⚠️ Utilisateur non connecté pour locations');
           return [];
         }
-        return await databaseService.getAllByUser('locations', user.uid);
+        const locations = await databaseService.getAllByUser('locations', user.uid);
+        console.log(`🏢 [LOAD LOCATIONS] ${locations.length} locations chargées pour l'utilisateur ${user.uid}`);
+        if (locations.length === 0) {
+          // Charger toutes les locations pour debug
+          const allLocs = await databaseService.getAll('locations');
+          console.log(`🏢 [DEBUG] Total locations dans la BDD: ${allLocs.length}`);
+          allLocs.forEach((loc: any) => {
+            console.log(`🏢 [DEBUG] Location: ${loc.name}, created_by: ${loc.created_by}`);
+          });
+        }
+        return locations;
       })() as any[];
       
       // Charger l'inventaire pour calculer les stats
@@ -105,7 +148,17 @@ export default function EntrepotsScreen() {
           console.warn('⚠️ Utilisateur non connecté pour inventory');
           return [];
         }
-        return await databaseService.getAllByUser('inventory', user.uid);
+        const inv = await databaseService.getAllByUser('inventory', user.uid);
+        console.log(`📦 [LOAD INVENTORY] ${inv.length} inventaires chargés pour l'utilisateur ${user.uid}`);
+        if (inv.length === 0) {
+          // Charger tous les inventaires pour debug
+          const allInv = await databaseService.getAll('inventory');
+          console.log(`📦 [DEBUG] Total inventaires dans la BDD: ${allInv.length}`);
+          allInv.forEach((invItem: any) => {
+            console.log(`📦 [DEBUG] Inventory: product_id=${invItem.product_id}, location_id=${invItem.location_id}, created_by=${invItem.created_by}`);
+          });
+        }
+        return inv;
       })() as any[];
       const products = await (async () => {
         const user = await getCurrentUser();
@@ -170,6 +223,16 @@ export default function EntrepotsScreen() {
       
       setLoading(true);
       
+      // Récupérer les informations de l'utilisateur actuel
+      const { getCurrentUser } = await import('../../utils/userInfo');
+      const user = await getCurrentUser();
+      
+      if (!user) {
+        Alert.alert('Erreur', 'Utilisateur non connecté');
+        setLoading(false);
+        return;
+      }
+      
       const locationData = {
         name: newLocation.name.trim(),
         address: newLocation.address.trim(),
@@ -177,6 +240,8 @@ export default function EntrepotsScreen() {
         contact_person: newLocation.contact_person.trim() || undefined,
         phone: newLocation.phone.trim() || undefined,
         is_active: true,
+        created_by: user.uid,
+        created_by_name: user.email || user.displayName || 'Utilisateur',
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
         sync_status: 'pending' as const,
@@ -232,7 +297,9 @@ export default function EntrepotsScreen() {
         phone: '',
       });
       
+      Keyboard.dismiss();
       setShowCreateModal(false);
+      setKeyboardHeight(0); // Réinitialiser la hauteur du clavier
       Alert.alert('Succès', 'Emplacement créé avec succès ! 🏢');
     } catch (error) {
       console.error('Erreur création emplacement:', error);
@@ -240,6 +307,150 @@ export default function EntrepotsScreen() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleDeleteLocation = async (location: LocationItem) => {
+    // Vérifier s'il y a des produits dans cet entrepôt
+    if (location.products_count > 0) {
+      Alert.alert(
+        'Impossible de supprimer',
+        `Cet entrepôt contient ${location.products_count} produit(s). Veuillez d'abord supprimer ou transférer tous les produits.`,
+        [{ text: 'OK' }]
+      );
+      return;
+    }
+
+    Alert.alert(
+      'Confirmer la suppression',
+      `Êtes-vous sûr de vouloir supprimer l'entrepôt "${location.name}" ?\n\nCette action est irréversible.`,
+      [
+        { text: 'Annuler', style: 'cancel' },
+        {
+          text: 'Supprimer',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              setLoading(true);
+
+              // Récupérer la location complète depuis la BDD pour avoir firebase_id
+              const locationData = await databaseService.getById('locations', location.id) as any;
+              
+              if (!locationData) {
+                Alert.alert('Erreur', 'Emplacement introuvable dans la base de données');
+                return;
+              }
+
+              // Déterminer l'ID Firebase à utiliser pour la suppression
+              let firebaseIdToDelete = locationData?.firebase_id;
+              
+              // Si pas de firebase_id mais sync_status est 'synced', 
+              // chercher dans Firebase par nom pour trouver le vrai ID
+              if (!firebaseIdToDelete && locationData?.sync_status === 'synced' && isConnected) {
+                try {
+                  const firebaseLocations = await firebaseService.getLocations();
+                  const matchingLocation = firebaseLocations.find(
+                    (loc: any) => loc.name === locationData.name && 
+                                 loc.address === locationData.address &&
+                                 loc.created_by === locationData.created_by
+                  );
+                  
+                  if (matchingLocation) {
+                    firebaseIdToDelete = matchingLocation.id;
+                  } else {
+                    // Essayer avec l'ID local comme dernier recours
+                    firebaseIdToDelete = locationData.id;
+                  }
+                } catch (error) {
+                  // En cas d'erreur, essayer avec l'ID local
+                  firebaseIdToDelete = locationData.id;
+                }
+              } else if (!firebaseIdToDelete && locationData?.sync_status === 'synced') {
+                // Mode offline ou pas de connexion : utiliser l'ID local
+                firebaseIdToDelete = locationData.id;
+              }
+
+              if (isConnected) {
+                try {
+                  let firebaseDeleted = false;
+                  
+                  // Liste des IDs à essayer pour la suppression Firebase (dans l'ordre)
+                  const idsToTry = [
+                    firebaseIdToDelete,  // ID trouvé (firebase_id ou recherché)
+                    locationData?.id,    // ID local (au cas où ils sont identiques)
+                  ].filter(Boolean); // Retirer les valeurs null/undefined
+                  
+                  // Essayer de supprimer avec chaque ID jusqu'à ce qu'un fonctionne
+                  for (const idToTry of idsToTry) {
+                    if (firebaseDeleted) break; // Déjà supprimé, arrêter
+                    
+                    try {
+                      await firebaseService.deleteLocation(idToTry);
+                      firebaseDeleted = true;
+                      break; // Succès, arrêter
+                    } catch (firebaseError: any) {
+                      // Si l'erreur est que le document n'existe pas, c'est OK (déjà supprimé)
+                      if (firebaseError?.message?.includes('not found') || 
+                          firebaseError?.code === 'not-found' ||
+                          firebaseError?.message?.includes('No document')) {
+                        firebaseDeleted = true; // Considérer comme supprimé (peut-être avec un autre ID)
+                        break;
+                      }
+                      // Continuer avec le prochain ID
+                    }
+                  }
+                } catch (error: any) {
+                  // Erreur silencieuse, on continue avec la suppression locale
+                }
+              }
+              
+              // Supprimer de la BDD locale (AsyncStorage) dans tous les cas (même si Firebase a échoué)
+              try {
+                await databaseService.delete('locations', location.id);
+                
+                // Invalider le cache explicitement
+                databaseService.invalidateCache('locations');
+                
+                // Si Firebase n'a pas été supprimé mais qu'on a un ID, ajouter à la queue
+                if (isConnected && firebaseIdToDelete) {
+                  // Vérifier si Firebase a été supprimé en essayant de le récupérer
+                  try {
+                    const firebaseLocation = await firebaseService.getLocationById(firebaseIdToDelete);
+                    if (firebaseLocation) {
+                      await syncService.addToSyncQueue('locations', location.id, 'delete', { 
+                        firebase_id: firebaseIdToDelete 
+                      });
+                    }
+                  } catch (checkError) {
+                    // Si erreur lors de la vérification, ajouter à la queue par précaution
+                    await syncService.addToSyncQueue('locations', location.id, 'delete', { 
+                      firebase_id: firebaseIdToDelete 
+                    });
+                  }
+                } else if (!isConnected && firebaseIdToDelete) {
+                  // Mode offline : ajouter à la queue
+                  await syncService.addToSyncQueue('locations', location.id, 'delete', { 
+                    firebase_id: firebaseIdToDelete 
+                  });
+                }
+              } catch (localError: any) {
+                console.error('Erreur lors de la suppression locale:', localError);
+                throw localError; // Relancer l'erreur pour qu'elle soit gérée par le catch principal
+              }
+
+              // Recharger les données depuis la BDD (pas le cache)
+              await loadLocations();
+              
+              Alert.alert('Succès', 'Entrepôt supprimé ! 🗑️');
+            } catch (error) {
+              console.error('❌ Erreur suppression entrepôt:', error);
+              Alert.alert('Erreur', 'Impossible de supprimer l\'entrepôt');
+            } finally {
+              setLoading(false);
+            }
+          },
+        },
+      ]
+    );
   };
 
   const getLocationTypeLabel = (type: string) => {
@@ -294,11 +505,22 @@ export default function EntrepotsScreen() {
           <Text style={styles.locationType}>{getLocationTypeLabel(item.location_type)}</Text>
         </View>
         
-        {item.sync_status === 'pending' && (
-          <View style={styles.syncBadge}>
-            <Ionicons name="cloud-upload-outline" size={16} color="#FF9500" />
-          </View>
-        )}
+        <View style={styles.locationHeaderActions}>
+          {item.sync_status === 'pending' && (
+            <View style={styles.syncBadge}>
+              <Ionicons name="cloud-upload-outline" size={16} color="#FF9500" />
+            </View>
+          )}
+          <TouchableOpacity
+            style={styles.deleteButton}
+            onPress={(e) => {
+              e.stopPropagation();
+              handleDeleteLocation(item);
+            }}
+          >
+            <Ionicons name="trash-outline" size={20} color="#FF3B30" />
+          </TouchableOpacity>
+        </View>
       </View>
 
       <View style={styles.locationAddress}>
@@ -395,7 +617,12 @@ export default function EntrepotsScreen() {
       {/* Bouton FAB */}
       <TouchableOpacity
         style={styles.fab}
-        onPress={() => setShowCreateModal(true)}
+        onPress={() => {
+          console.log('📜 [MODAL] Bouton "Nouvel Emplacement" cliqué - Ouverture du modal');
+          Keyboard.dismiss();
+          setKeyboardHeight(0);
+          setShowCreateModal(true);
+        }}
       >
         <Ionicons name="add" size={32} color="#fff" />
       </TouchableOpacity>
@@ -405,18 +632,46 @@ export default function EntrepotsScreen() {
         visible={showCreateModal}
         animationType="slide"
         transparent={true}
-        onRequestClose={() => setShowCreateModal(false)}
+        onRequestClose={() => {
+          console.log('📜 [MODAL] Fermeture du modal demandée');
+          Keyboard.dismiss();
+          setShowCreateModal(false);
+          setKeyboardHeight(0);
+        }}
+        onShow={() => {
+          console.log('📜 [MODAL] Modal "Nouvel Emplacement" ouvert');
+        }}
       >
-        <View style={styles.modalOverlay}>
+        <KeyboardAvoidingView 
+          style={styles.modalOverlay}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}
+        >
           <View style={styles.modalContent}>
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>🏢 Nouvel Emplacement</Text>
-              <TouchableOpacity onPress={() => setShowCreateModal(false)}>
+              <Text style={styles.modalTitle}>🏢 Nouvel Emplacements</Text>
+              <TouchableOpacity onPress={() => {
+                Keyboard.dismiss();
+                setShowCreateModal(false);
+                setKeyboardHeight(0);
+              }}>
                 <Ionicons name="close" size={28} color="#000" />
               </TouchableOpacity>
             </View>
-
-            <View style={styles.modalBody}>
+            
+            <ScrollView 
+              ref={scrollViewRef}
+              style={styles.modalBody}
+              contentContainerStyle={[
+                styles.modalScrollContent,
+                { paddingBottom: keyboardHeight > 0 ? keyboardHeight + 180 : 180 }
+              ]}
+              showsVerticalScrollIndicator={true}
+              keyboardShouldPersistTaps="handled"
+              scrollEnabled={true}
+              nestedScrollEnabled={true}
+              bounces={false}
+            >
               {/* Nom */}
               <View style={styles.inputGroup}>
                 <Text style={styles.inputLabel}>Nom de l'emplacement *</Text>
@@ -440,6 +695,11 @@ export default function EntrepotsScreen() {
                   placeholderTextColor="#999"
                   multiline
                   numberOfLines={3}
+                  onFocus={() => {
+                    setTimeout(() => {
+                      scrollViewRef.current?.scrollToEnd({ animated: true });
+                    }, 300);
+                  }}
                 />
               </View>
 
@@ -518,6 +778,11 @@ export default function EntrepotsScreen() {
                   value={newLocation.contact_person}
                   onChangeText={(text) => setNewLocation({ ...newLocation, contact_person: text })}
                   placeholderTextColor="#999"
+                  onFocus={() => {
+                    setTimeout(() => {
+                      scrollViewRef.current?.scrollToEnd({ animated: true });
+                    }, 300);
+                  }}
                 />
               </View>
 
@@ -531,14 +796,22 @@ export default function EntrepotsScreen() {
                   onChangeText={(text) => setNewLocation({ ...newLocation, phone: text })}
                   placeholderTextColor="#999"
                   keyboardType="phone-pad"
+                  onFocus={() => {
+                    setTimeout(() => {
+                      scrollViewRef.current?.scrollToEnd({ animated: true });
+                    }, 300);
+                  }}
                 />
               </View>
-            </View>
-
+            </ScrollView>
+            
             <View style={styles.modalFooter}>
               <TouchableOpacity
                 style={[styles.modalButton, styles.modalButtonCancel]}
-                onPress={() => setShowCreateModal(false)}
+                onPress={() => {
+                  Keyboard.dismiss();
+                  setShowCreateModal(false);
+                }}
               >
                 <Text style={styles.modalButtonTextCancel}>Annuler</Text>
               </TouchableOpacity>
@@ -553,7 +826,7 @@ export default function EntrepotsScreen() {
               </TouchableOpacity>
             </View>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       {/* Bouton temporaire de nettoyage - À SUPPRIMER APRÈS UTILISATION */}
@@ -661,8 +934,18 @@ const styles = StyleSheet.create({
     fontSize: dynamicSizes.fontSize.small,
     color: '#666',
   },
+  locationHeaderActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
   syncBadge: {
     padding: dynamicSizes.spacing.xs,
+  },
+  deleteButton: {
+    padding: dynamicSizes.spacing.xs,
+    borderRadius: 8,
+    backgroundColor: '#FFEBEE',
   },
   locationAddress: {
     flexDirection: 'row',
@@ -762,7 +1045,9 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
-    maxHeight: height * 0.9,
+    maxHeight: '90%',
+    minHeight: '60%',
+    flexDirection: 'column',
   },
   modalHeader: {
     flexDirection: 'row',
@@ -778,8 +1063,13 @@ const styles = StyleSheet.create({
     color: '#1a1a1a',
   },
   modalBody: {
+    flex: 1,
     padding: dynamicSizes.spacing.lg,
-    maxHeight: height * 0.6,
+    minHeight: 0, // Important pour permettre le scroll dans flex container
+  },
+  modalScrollContent: {
+    flexGrow: 0, // Important : ne pas utiliser flexGrow: 1 pour permettre le scroll
+    // Le paddingBottom est géré dynamiquement dans contentContainerStyle
   },
   inputGroup: {
     marginBottom: dynamicSizes.spacing.lg,
@@ -836,6 +1126,7 @@ const styles = StyleSheet.create({
     gap: dynamicSizes.spacing.md,
     borderTopWidth: 1,
     borderTopColor: '#e0e0e0',
+    backgroundColor: '#fff',
   },
   modalButton: {
     flex: 1,

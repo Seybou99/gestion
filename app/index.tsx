@@ -1,3 +1,5 @@
-export default function Page() {
-  return null;
+import { Redirect } from 'expo-router';
+
+export default function IndexRedirect() {
+  return <Redirect href="/accueil" />;
 }

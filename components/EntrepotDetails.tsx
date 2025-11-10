@@ -2,19 +2,19 @@ import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import React, { useEffect, useState } from 'react';
 import {
-  ActivityIndicator,
-  Alert,
-  Dimensions,
-  FlatList,
-  KeyboardAvoidingView,
-  Modal,
-  Platform,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  View,
+    ActivityIndicator,
+    Alert,
+    Dimensions,
+    FlatList,
+    KeyboardAvoidingView,
+    Modal,
+    Platform,
+    ScrollView,
+    StyleSheet,
+    Text,
+    TextInput,
+    TouchableOpacity,
+    View,
 } from 'react-native';
 import { useSelector } from 'react-redux';
 import { databaseService } from '../services/DatabaseService';
@@ -72,14 +72,27 @@ export default function EntrepotDetails({ locationId, onClose }: Props) {
     loadLocationDetails();
   }, [locationId]);
 
-  const loadLocationDetails = async () => {
+  const loadLocationDetails = async (retryCount = 0) => {
     try {
       setLoading(true);
+      
+      // Invalider le cache pour s'assurer d'avoir les dernières données
+      databaseService.invalidateCache('locations');
       
       const allLocations = await databaseService.getAll('locations') as any[];
       const foundLocation = allLocations.find(loc => loc.id === locationId);
       
       if (!foundLocation) {
+        // Réessayer une fois après un court délai si la première tentative échoue
+        if (retryCount === 0) {
+          console.log(`⏳ Emplacement ${locationId} introuvable, réessai...`);
+          await new Promise(resolve => setTimeout(resolve, 500));
+          return loadLocationDetails(1);
+        }
+        
+        console.error('❌ Emplacement introuvable après réessai:', locationId);
+        console.log('📍 Emplacements disponibles:', allLocations.map(l => ({ id: l.id, name: l.name })));
+        
         Alert.alert('Erreur', 'Emplacement introuvable');
         onClose();
         return;
@@ -135,6 +148,16 @@ export default function EntrepotDetails({ locationId, onClose }: Props) {
         setLoading(true);
         console.log('🆕 Création d\'un nouveau produit pour l\'entrepôt');
         
+        // Récupérer les informations de l'utilisateur
+        const { getCurrentUser } = await import('../utils/userInfo');
+        const user = await getCurrentUser();
+        
+        if (!user) {
+          Alert.alert('Erreur', 'Utilisateur non connecté');
+          setLoading(false);
+          return;
+        }
+        
         // Calcul de la marge
         const margin = (priceBuy > 0 && priceSell > 0) ? ((priceSell - priceBuy) / priceBuy) * 100 : 0;
         
@@ -152,6 +175,8 @@ export default function EntrepotDetails({ locationId, onClose }: Props) {
           barcode: '',
           image_url: '',
           is_active: true,
+          created_by: user.uid,
+          created_by_name: user.email || user.displayName || 'Utilisateur',
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
           sync_status: 'pending' as const,
@@ -214,6 +239,16 @@ export default function EntrepotDetails({ locationId, onClose }: Props) {
       if (!loading) setLoading(true);
       console.log('📦 Création de l\'inventaire pour le produit:', productId);
       
+      // Récupérer les informations de l'utilisateur
+      const { getCurrentUser } = await import('../utils/userInfo');
+      const user = await getCurrentUser();
+      
+      if (!user) {
+        Alert.alert('Erreur', 'Utilisateur non connecté');
+        setLoading(false);
+        return;
+      }
+      
       // Créer l'entrée d'inventaire (avec les quantités)
       const inventoryData = {
         product_id: productId,
@@ -224,6 +259,8 @@ export default function EntrepotDetails({ locationId, onClose }: Props) {
         quantity_max: maxQty,
         last_movement_date: new Date().toISOString(),
         last_movement_type: 'initial',
+        created_by: user.uid,
+        created_by_name: user.email || user.displayName || 'Utilisateur',
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
         sync_status: 'pending' as const,
@@ -580,26 +617,28 @@ export default function EntrepotDetails({ locationId, onClose }: Props) {
                 /* Formulaire Produit Existant */
                 <View style={styles.inputGroup}>
                   <Text style={styles.inputLabel}>Sélectionner un produit *</Text>
-                  <View style={styles.pickerContainer}>
-                    {getAvailableProducts().length === 0 ? (
-                      <Text style={styles.noProductsText}>Tous les produits sont déjà dans l'inventaire</Text>
-                    ) : (
-                      <View style={styles.productList}>
-                        {getAvailableProducts().map((item) => (
-                          <TouchableOpacity
-                            key={item.id}
-                            style={[styles.productOption, selectedProduct === item.id && styles.productOptionSelected]}
-                            onPress={() => setSelectedProduct(item.id)}
-                          >
-                            <Text style={[styles.productOptionText, selectedProduct === item.id && styles.productOptionTextSelected]}>
-                              {item.name} {item.code ? `(${item.code})` : ''}
-                            </Text>
-                            {selectedProduct === item.id && <Ionicons name="checkmark" size={20} color="#007AFF" />}
-                          </TouchableOpacity>
-                        ))}
-                      </View>
-                    )}
-                  </View>
+                  {getAvailableProducts().length === 0 ? (
+                    <Text style={styles.noProductsText}>Tous les produits sont déjà dans l'inventaire</Text>
+                  ) : (
+                    <ScrollView 
+                      style={styles.productListContainer}
+                      nestedScrollEnabled={true}
+                      showsVerticalScrollIndicator={true}
+                    >
+                      {getAvailableProducts().map((item) => (
+                        <TouchableOpacity
+                          key={item.id}
+                          style={[styles.productOption, selectedProduct === item.id && styles.productOptionSelected]}
+                          onPress={() => setSelectedProduct(item.id)}
+                        >
+                          <Text style={[styles.productOptionText, selectedProduct === item.id && styles.productOptionTextSelected]}>
+                            {item.name} {item.code ? `(${item.code})` : ''}
+                          </Text>
+                          {selectedProduct === item.id && <Ionicons name="checkmark" size={20} color="#007AFF" />}
+                        </TouchableOpacity>
+                      ))}
+                    </ScrollView>
+                  )}
                 </View>
               )}
               
@@ -791,6 +830,10 @@ const styles = StyleSheet.create({
   },
   pickerContainer: { maxHeight: 150 },
   productList: { maxHeight: 150 },
+  productListContainer: {
+    maxHeight: 150,
+    marginBottom: dynamicSizes.spacing.xs,
+  },
   productOption: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -800,6 +843,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#e0e0e0',
     marginBottom: dynamicSizes.spacing.xs,
+    backgroundColor: '#fff',
   },
   productOptionSelected: { backgroundColor: '#E3F2FD', borderColor: '#007AFF' },
   productOptionText: { fontSize: dynamicSizes.fontSize.medium, color: '#1a1a1a' },

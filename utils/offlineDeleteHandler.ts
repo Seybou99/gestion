@@ -22,24 +22,26 @@ export async function handleOfflineDelete(productId: string): Promise<boolean> {
 
     console.log('📦 [OFFLINE DELETE] Produit trouvé:', productToDelete.name);
 
-    // 2. Supprimer localement en priorité
-    await databaseService.delete('products', productId);
-    console.log('✅ [OFFLINE DELETE] Produit supprimé localement');
-
-    // 3. Essayer de supprimer de Firebase si l'ID Firebase existe
+    // 2. Si on a un firebase_id valide → ONLINE FIRST: supprimer dans Firebase d'abord
     const firebaseId = productToDelete.firebase_id;
-    
     if (firebaseId && isValidFirebaseId(firebaseId)) {
-      console.log('🔄 [OFFLINE DELETE] Tentative suppression Firebase:', firebaseId);
-      
+      console.log('🌐 [OFFLINE DELETE] Suppression ONLINE-FIRST, Firebase ID:', firebaseId);
       try {
         await firebaseService.deleteProduct(firebaseId);
         console.log('✅ [OFFLINE DELETE] Produit supprimé de Firebase');
+
+        // Puis supprimer localement
+        await databaseService.delete('products', productId);
+        console.log('✅ [OFFLINE DELETE] Produit supprimé localement');
         return true;
       } catch (error) {
-        console.log('⚠️ [OFFLINE DELETE] Échec suppression Firebase:', error);
-        
-        // Ajouter à la queue de sync pour tentative ultérieure
+        console.log('⚠️ [OFFLINE DELETE] Échec suppression Firebase, fallback local + queue:', error);
+
+        // Fallback: supprimer localement pour une UX immédiate
+        await databaseService.delete('products', productId);
+        console.log('✅ [OFFLINE DELETE] Produit supprimé localement (fallback)');
+
+        // Ajouter à la queue de sync pour suppression Firebase ultérieure
         await databaseService.insert('sync_queue', {
           table_name: 'products',
           record_id: firebaseId,
@@ -50,33 +52,65 @@ export async function handleOfflineDelete(productId: string): Promise<boolean> {
           retry_count: 0,
           created_at: new Date().toISOString(),
         });
-        
         console.log('📝 [OFFLINE DELETE] Ajouté à la queue de sync pour suppression Firebase');
-        return true; // La suppression locale a réussi
+        return true;
       }
-    } else {
-      console.log('📱 [OFFLINE DELETE] Aucun ID Firebase - produit créé en mode offline uniquement');
-      
-      // Si le produit était synchronisé mais n'a pas de firebase_id, 
-      // c'est peut-être un problème de synchronisation - ajouter à la queue
-      if (productToDelete.sync_status === 'synced') {
-        console.log('🔄 [OFFLINE DELETE] Produit marqué comme synchronisé mais pas de firebase_id - ajout à la queue');
-        await databaseService.insert('sync_queue', {
-          table_name: 'products',
-          record_id: productId,
-          operation: 'delete',
-          data: JSON.stringify(productToDelete),
-          priority: 2, // Priorité plus faible car pas sûr de l'ID Firebase
-          status: 'pending',
-          retry_count: 0,
-          created_at: new Date().toISOString(),
-        });
-        console.log('📝 [OFFLINE DELETE] Ajouté à la queue de sync pour vérification');
-      }
-      
-      return true; // La suppression locale a réussi
     }
 
+    // 3. Pas de firebase_id → tenter de le retrouver par signature et supprimer côté Firebase
+    console.log('📱 [OFFLINE DELETE] Aucun ID Firebase - tentative de recherche par signature');
+
+    try {
+      const guessedId = await firebaseService.findProductIdBySignature({
+        createdBy: productToDelete.created_by,
+        sku: productToDelete.sku,
+        name: productToDelete.name,
+        createdAtIso: productToDelete.created_at,
+        timeWindowMs: 10 * 60 * 1000, // 10 minutes de fenêtre
+      });
+
+      if (guessedId) {
+        console.log('🔍 [OFFLINE DELETE] ID Firebase retrouvé par signature:', guessedId);
+        try {
+          await firebaseService.deleteProduct(guessedId);
+          console.log('✅ [OFFLINE DELETE] Produit supprimé de Firebase via signature');
+        } catch (e) {
+          console.log('⚠️ [OFFLINE DELETE] Échec suppression Firebase via signature, ajout queue');
+          await databaseService.insert('sync_queue', {
+            table_name: 'products',
+            record_id: guessedId,
+            operation: 'delete',
+            data: JSON.stringify(productToDelete),
+            priority: 1,
+            status: 'pending',
+            retry_count: 0,
+            created_at: new Date().toISOString(),
+          });
+        }
+      } else {
+        console.log('⚠️ [OFFLINE DELETE] Aucun ID trouvé par signature');
+        if (productToDelete.sync_status === 'synced') {
+          await databaseService.insert('sync_queue', {
+            table_name: 'products',
+            record_id: productId,
+            operation: 'delete',
+            data: JSON.stringify(productToDelete),
+            priority: 2,
+            status: 'pending',
+            retry_count: 0,
+            created_at: new Date().toISOString(),
+          });
+          console.log('📝 [OFFLINE DELETE] Ajouté à la queue de sync pour vérification');
+        }
+      }
+    } catch (e) {
+      console.log('⚠️ [OFFLINE DELETE] Erreur recherche par signature:', e);
+    }
+
+    // 4. Supprimer localement dans tous les cas
+    await databaseService.delete('products', productId);
+    console.log('✅ [OFFLINE DELETE] Produit supprimé localement');
+    return true;
   } catch (error) {
     console.error('❌ [OFFLINE DELETE] Erreur:', error);
     return false;

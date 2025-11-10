@@ -130,15 +130,28 @@ export default function EntrepotDetailsScreen() {
     }
   };
 
-  const loadLocationDetails = async () => {
+  const loadLocationDetails = async (retryCount = 0) => {
     try {
       setLoading(true);
+      
+      // Invalider le cache pour s'assurer d'avoir les dernières données
+      databaseService.invalidateCache('locations');
       
       // Charger l'emplacement
       const allLocations = await databaseService.getAll('locations') as any[];
       const foundLocation = allLocations.find(loc => loc.id === id);
       
       if (!foundLocation) {
+        // Réessayer une fois après un court délai si la première tentative échoue
+        if (retryCount === 0) {
+          console.log(`⏳ Emplacement ${id} introuvable, réessai...`);
+          await new Promise(resolve => setTimeout(resolve, 500));
+          return loadLocationDetails(1);
+        }
+        
+        console.error('❌ Emplacement introuvable après réessai:', id);
+        console.log('📍 Emplacements disponibles:', allLocations.map(l => ({ id: l.id, name: l.name })));
+        
         Alert.alert('Erreur', 'Emplacement introuvable');
         router.back();
         return;
@@ -383,6 +396,22 @@ export default function EntrepotDetailsScreen() {
     return inventory.reduce((sum, inv) => sum + (inv.quantity_available * (inv.product_price || 0)), 0);
   };
 
+  // Fonction pour déterminer la taille de la police selon la longueur du nombre
+  const getValueFontSize = (value: number) => {
+    const formattedValue = value.toLocaleString('fr-FR');
+    const length = formattedValue.length;
+    
+    // Réduire la taille si le nombre est long
+    if (length > 12) {
+      return dynamicSizes.fontSize.small;
+    } else if (length > 9) {
+      return dynamicSizes.fontSize.medium;
+    } else if (length > 7) {
+      return dynamicSizes.fontSize.large;
+    }
+    return dynamicSizes.fontSize.xl;
+  };
+
   const getLowStockCount = () => {
     return inventory.filter(inv => inv.quantity_available < inv.quantity_min).length;
   };
@@ -496,7 +525,9 @@ export default function EntrepotDetailsScreen() {
         </View>
         <View style={styles.statDivider} />
         <View style={styles.statItem}>
-          <Text style={styles.statValue}>{getTotalValue().toLocaleString('fr-FR')}</Text>
+          <Text style={[styles.statValue, { fontSize: getValueFontSize(getTotalValue()) }]}>
+            {getTotalValue().toLocaleString('fr-FR')}
+          </Text>
           <Text style={styles.statLabel}>Valeur totale</Text>
         </View>
         <View style={styles.statDivider} />
@@ -643,28 +674,28 @@ export default function EntrepotDetailsScreen() {
             >
               <View style={styles.inputGroup}>
                 <Text style={styles.inputLabel}>Produit *</Text>
-                <View style={styles.pickerContainer}>
-                  {getAvailableProducts().length === 0 ? (
-                    <Text style={styles.noProductsText}>Tous les produits sont déjà dans l'inventaire</Text>
-                  ) : (
-                    <FlatList
-                      data={getAvailableProducts()}
-                      keyExtractor={(item) => item.id}
-                      renderItem={({ item }) => (
-                        <TouchableOpacity
-                          style={[styles.productOption, selectedProduct === item.id && styles.productOptionSelected]}
-                          onPress={() => setSelectedProduct(item.id)}
-                        >
-                          <Text style={[styles.productOptionText, selectedProduct === item.id && styles.productOptionTextSelected]}>
-                            {item.name} {item.code ? `(${item.code})` : ''}
-                          </Text>
-                          {selectedProduct === item.id && <Ionicons name="checkmark" size={20} color="#007AFF" />}
-                        </TouchableOpacity>
-                      )}
-                      style={styles.productList}
-                    />
-                  )}
-                </View>
+                {getAvailableProducts().length === 0 ? (
+                  <Text style={styles.noProductsText}>Tous les produits sont déjà dans l'inventaire</Text>
+                ) : (
+                  <ScrollView 
+                    style={styles.productListContainer}
+                    nestedScrollEnabled={true}
+                    showsVerticalScrollIndicator={true}
+                  >
+                    {getAvailableProducts().map((item) => (
+                      <TouchableOpacity
+                        key={item.id}
+                        style={[styles.productOption, selectedProduct === item.id && styles.productOptionSelected]}
+                        onPress={() => setSelectedProduct(item.id)}
+                      >
+                        <Text style={[styles.productOptionText, selectedProduct === item.id && styles.productOptionTextSelected]}>
+                          {item.name} {item.code ? `(${item.code})` : ''}
+                        </Text>
+                        {selectedProduct === item.id && <Ionicons name="checkmark" size={20} color="#007AFF" />}
+                      </TouchableOpacity>
+                    ))}
+                  </ScrollView>
+                )}
               </View>
               
               <View style={styles.inputGroup}>
@@ -932,6 +963,10 @@ const styles = StyleSheet.create({
   },
   pickerContainer: { maxHeight: 150 },
   productList: { maxHeight: 150 },
+  productListContainer: {
+    maxHeight: 150,
+    marginBottom: dynamicSizes.spacing.xs,
+  },
   productOption: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -941,6 +976,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#e0e0e0',
     marginBottom: dynamicSizes.spacing.xs,
+    backgroundColor: '#fff',
   },
   productOptionSelected: { backgroundColor: '#E3F2FD', borderColor: '#007AFF' },
   productOptionText: { fontSize: dynamicSizes.fontSize.medium, color: '#1a1a1a' },

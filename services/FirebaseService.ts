@@ -1,16 +1,17 @@
 // Service Firebase réel avec Firestore
 import {
-  addDoc,
-  collection,
-  deleteDoc,
-  doc,
-  getDoc,
-  getDocs,
-  orderBy,
-  query,
-  serverTimestamp,
-  updateDoc,
-  where
+    addDoc,
+    collection,
+    deleteDoc,
+    doc,
+    getDoc,
+    getDocs,
+    orderBy,
+    query,
+    serverTimestamp,
+    setDoc,
+    updateDoc,
+    where
 } from 'firebase/firestore';
 import { getFirebaseId, isValidLocalId } from '../utils/firebaseIdMapper';
 import { db, FIREBASE_ENABLED, FIREBASE_TIMEOUT, FORCE_OFFLINE_MODE } from './firebase-config';
@@ -31,6 +32,8 @@ export interface Product {
   is_active: boolean;
   created_at: any;
   updated_at: any;
+  created_by?: string;
+  created_by_name?: string;
   sync_status: 'synced' | 'pending' | 'error';
 }
 
@@ -50,6 +53,7 @@ export interface Stock {
 
 export interface Sale {
   id: string;
+  user_id: string;
   customer_id?: string;
   location_id: string;
   total_amount: number;
@@ -59,6 +63,7 @@ export interface Sale {
   payment_status: 'paid' | 'pending' | 'refunded';
   sale_date: any;
   created_by: string;
+  created_by_name: string;
   notes?: string;
   sync_status: 'synced' | 'pending' | 'error';
 }
@@ -96,6 +101,8 @@ export interface Location {
   created_at: any;
   updated_at: any;
   sync_status: 'synced' | 'pending' | 'error';
+  created_by?: string;
+  created_by_name?: string;
 }
 
 export interface Inventory {
@@ -110,6 +117,8 @@ export interface Inventory {
   last_movement_type?: string;
   created_at: any;
   updated_at: any;
+  created_by?: string;
+  created_by_name?: string;
   sync_status: 'synced' | 'pending' | 'error';
 }
 
@@ -132,6 +141,8 @@ export interface FirebaseService {
   // Sales
   getSales(): Promise<Sale[]>;
   createSale(sale: Omit<Sale, 'id' | 'created_at' | 'updated_at'>): Promise<string>;
+  deleteSale(id: string): Promise<void>;
+  deleteSaleItem(id: string): Promise<void>;
   // Customers
   getCustomers(): Promise<Customer[]>;
   createCustomer(customer: Omit<Customer, 'id' | 'created_at'>): Promise<string>;
@@ -152,6 +163,8 @@ export interface FirebaseService {
   // Search
   searchProducts(searchTerm: string): Promise<Product[]>;
   getProductsByCategory(categoryId: string): Promise<Product[]>;
+  // Signature-based helper
+  findProductIdBySignature(params: { createdBy: string; sku?: string; name?: string; createdAtIso?: string; timeWindowMs?: number }): Promise<string | null>;
 }
 
 class FirebaseServiceImpl implements FirebaseService {
@@ -536,10 +549,26 @@ class FirebaseServiceImpl implements FirebaseService {
       const stockRef = collection(db, 'stock');
       const now = serverTimestamp();
       
+      // Normaliser product_id: garantir un ID Firestore
+      let normalizedProductId = stock.product_id;
+      try {
+        const { isValidLocalId } = await import('../utils/firebaseIdMapper');
+        if (isValidLocalId && isValidLocalId(stock.product_id)) {
+          const foundFirebaseId = await getFirebaseId(stock.product_id);
+          if (foundFirebaseId) {
+            normalizedProductId = foundFirebaseId;
+            console.log('🔄 [FIREBASE DEBUG] product_id normalisé vers Firebase ID:', normalizedProductId);
+          } else {
+            // Dernier recours: tenter par signature minimaliste (impossible sans infos, donc garder tel quel)
+            console.log('⚠️ [FIREBASE DEBUG] Aucun mapping Firebase pour product_id local, utilisation tel quel');
+          }
+        }
+      } catch {}
+      
       // Filtrer les valeurs undefined (Firestore ne les accepte pas)
       console.log('🔄 [FIREBASE DEBUG] Filtrage des valeurs undefined');
       const cleanStock = Object.fromEntries(
-        Object.entries(stock).filter(([_, value]) => value !== undefined)
+        Object.entries({ ...stock, product_id: normalizedProductId }).filter(([_, value]) => value !== undefined)
       ) as any;
       console.log('✅ [FIREBASE DEBUG] Stock nettoyé:', cleanStock);
       
@@ -762,7 +791,7 @@ class FirebaseServiceImpl implements FirebaseService {
         console.log('📱 Mode offline - mise à jour locale uniquement');
         throw new Error('Mode offline');
       }
-      console.error('❌ [STOCK BY PRODUCT] Erreur:', error);
+      console.warn('❌ [STOCK BY PRODUCT] Erreur:', error);
       throw error;
     }
   }
@@ -803,23 +832,106 @@ class FirebaseServiceImpl implements FirebaseService {
     }
   }
 
-  async createSale(sale: Omit<Sale, 'id' | 'created_at' | 'updated_at'>): Promise<string> {
+  async createSale(sale: Omit<Sale, 'id' | 'created_at' | 'updated_at'> & { id?: string }): Promise<string> {
     try {
       const salesRef = collection(db, 'sales');
       const now = serverTimestamp();
       
+      // Utiliser l'ID local s'il existe, sinon laisser Firestore en générer un
+      const saleId = sale.id || doc(salesRef).id;
+      
+      // Créer les données sans l'ID (il sera dans le document ID)
+      const { id, ...saleDataWithoutId } = sale;
+      
       const saleData = {
-        ...sale,
+        ...saleDataWithoutId,
         created_at: now,
         updated_at: now,
         sync_status: 'synced' as const,
       };
       
-      const docRef = await addDoc(salesRef, saleData);
-      console.log('✅ Vente créée dans Firestore:', docRef.id);
-      return docRef.id;
+      // Utiliser setDoc avec l'ID local pour garantir que l'ID local = ID Firebase
+      const docRef = doc(salesRef, saleId);
+      await setDoc(docRef, saleData);
+      
+      console.log('✅ [FIREBASE] Vente créée dans Firestore avec ID:', saleId);
+      return saleId;
     } catch (error) {
-      console.error('❌ Erreur création vente:', error);
+      console.error('❌ [FIREBASE] Erreur création vente:', error);
+      throw error;
+    }
+  }
+
+  async deleteSale(id: string): Promise<void> {
+    try {
+      console.log('🗑️ [FIREBASE] Début deleteSale');
+      console.log('🗑️ [FIREBASE] ID reçu:', id);
+
+      if (!FIREBASE_ENABLED || !db || FORCE_OFFLINE_MODE) {
+        console.log(FORCE_OFFLINE_MODE ? '📱 Mode OFFLINE forcé, suppression locale uniquement' : '📱 Firebase désactivé, suppression locale uniquement');
+        throw new Error(FORCE_OFFLINE_MODE ? 'Mode offline' : 'Firebase désactivé');
+      }
+
+      const saleRef = doc(db, 'sales', id);
+      
+      console.log('🔄 [FIREBASE] Appel deleteDoc avec timeout');
+      
+      await Promise.race([
+        deleteDoc(saleRef),
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Timeout Firebase: deleteSale a pris plus de 3 secondes')), FIREBASE_TIMEOUT)
+        )
+      ]);
+
+      console.log('✅ [FIREBASE] deleteDoc terminé');
+      console.log('✅ [FIREBASE] Vente supprimée de Firestore:', id);
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('Timeout Firebase')) {
+        console.log('⚠️ Firebase timeout suppression vente (normal en développement)');
+        throw new Error('Firebase temporairement indisponible');
+      }
+      if (error instanceof Error && error.message.includes('Mode offline')) {
+        console.log('📱 Mode offline - suppression locale uniquement (normal)');
+        throw new Error('Mode offline');
+      }
+      console.error('❌ [FIREBASE] Erreur suppression vente:', error);
+      throw error;
+    }
+  }
+
+  async deleteSaleItem(id: string): Promise<void> {
+    try {
+      console.log('🗑️ [FIREBASE] Début deleteSaleItem');
+      console.log('🗑️ [FIREBASE] ID reçu:', id);
+
+      if (!FIREBASE_ENABLED || !db || FORCE_OFFLINE_MODE) {
+        console.log(FORCE_OFFLINE_MODE ? '📱 Mode OFFLINE forcé, suppression locale uniquement' : '📱 Firebase désactivé, suppression locale uniquement');
+        throw new Error(FORCE_OFFLINE_MODE ? 'Mode offline' : 'Firebase désactivé');
+      }
+
+      const saleItemRef = doc(db, 'sale_items', id);
+      
+      console.log('🔄 [FIREBASE] Appel deleteDoc avec timeout');
+      
+      await Promise.race([
+        deleteDoc(saleItemRef),
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Timeout Firebase: deleteSaleItem a pris plus de 3 secondes')), FIREBASE_TIMEOUT)
+        )
+      ]);
+
+      console.log('✅ [FIREBASE] deleteDoc terminé');
+      console.log('✅ [FIREBASE] Item de vente supprimé de Firestore:', id);
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('Timeout Firebase')) {
+        console.log('⚠️ Firebase timeout suppression item de vente (normal en développement)');
+        throw new Error('Firebase temporairement indisponible');
+      }
+      if (error instanceof Error && error.message.includes('Mode offline')) {
+        console.log('📱 Mode offline - suppression locale uniquement (normal)');
+        throw new Error('Mode offline');
+      }
+      console.error('❌ [FIREBASE] Erreur suppression item de vente:', error);
       throw error;
     }
   }
@@ -969,6 +1081,49 @@ class FirebaseServiceImpl implements FirebaseService {
     }
   }
 
+  async findProductIdBySignature(params: { createdBy: string; sku?: string; name?: string; createdAtIso?: string; timeWindowMs?: number }): Promise<string | null> {
+    try {
+      const { createdBy, sku, name, createdAtIso, timeWindowMs = 5 * 60 * 1000 } = params;
+
+      // Récupérer tous les produits de l'utilisateur
+      const products = await this.getProducts(); // déjà filtré par created_by courant
+
+      // Filtrer par signature fournie
+      let candidates = products.filter(p => p.created_by === createdBy);
+
+      if (sku) {
+        candidates = candidates.filter(p => (p.sku || '').toLowerCase() === sku.toLowerCase());
+      }
+
+      if (!sku && name) {
+        candidates = candidates.filter(p => (p.name || '').toLowerCase() === name.toLowerCase());
+      }
+
+      if (createdAtIso) {
+        const target = new Date(createdAtIso).getTime();
+        candidates = candidates.filter(p => {
+          const pt = new Date((p.created_at as any)).getTime();
+          return Math.abs(pt - target) <= timeWindowMs;
+        });
+      }
+
+      if (candidates.length === 1) {
+        return candidates[0].id;
+      }
+
+      // Si plusieurs candidats, privilégier celui avec SKU exact si disponible
+      if (candidates.length > 1 && sku) {
+        const skuExact = candidates.find(p => (p.sku || '').toLowerCase() === sku.toLowerCase());
+        if (skuExact) return skuExact.id;
+      }
+
+      return null;
+    } catch (error) {
+      console.log('⚠️ [FIREBASE SERVICE] findProductIdBySignature erreur:', error);
+      return null;
+    }
+  }
+
   // === SYNC ===
   async getUpdatesSince(timestamp: string): Promise<any[]> {
     try {
@@ -1020,7 +1175,7 @@ class FirebaseServiceImpl implements FirebaseService {
         console.log('⚠️ Firebase timeout (normal en développement)');
         return []; // Retourner un tableau vide au lieu de lancer une erreur
       }
-      console.error('❌ Erreur récupération catégories:', error);
+      console.log('❌ Erreur récupération catégories:', error);
       throw error;
     }
   }
@@ -1326,8 +1481,13 @@ class FirebaseServiceImpl implements FirebaseService {
 
       const locationsRef = collection(db, 'locations');
       
+      // Filtrer les champs undefined pour éviter l'erreur Firebase
+      const cleanLocation = Object.fromEntries(
+        Object.entries(location).filter(([_, value]) => value !== undefined)
+      );
+      
       const locationData = {
-        ...location,
+        ...cleanLocation,
         created_at: serverTimestamp(),
         updated_at: serverTimestamp(),
         sync_status: 'synced' as const,

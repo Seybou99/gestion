@@ -1,4 +1,3 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { createAsyncThunk, createSlice, PayloadAction } from '@reduxjs/toolkit';
 import { databaseService } from '../../services/DatabaseService';
 import { firebaseService } from '../../services/FirebaseService';
@@ -64,10 +63,12 @@ export const fetchProducts = createAsyncThunk(
       }
       
       console.log('👤 [FETCH PRODUCTS] Chargement produits pour:', currentUser.email);
+      const allowedOwners = currentUser.allowedOwnerIds || [currentUser.uid];
+      const ownerSet = new Set(allowedOwners);
       
       // Charger SEULEMENT les produits de cet utilisateur
       const allProducts = await databaseService.getProductsWithStock();
-      const userProducts = allProducts.filter(p => p.created_by === currentUser.uid);
+      const userProducts = allProducts.filter(p => !p.created_by || ownerSet.has(p.created_by));
       
       console.log(`📦 [FETCH PRODUCTS] ${userProducts.length}/${allProducts.length} produits pour ${currentUser.email}`);
       
@@ -93,19 +94,18 @@ export const fetchProducts = createAsyncThunk(
 export const createProduct = createAsyncThunk(
   'products/createProduct',
   async (productData: Omit<Product, 'id' | 'created_at' | 'updated_at' | 'sync_status'> & { stock_quantity?: number }, { dispatch, getState }) => {
-    console.log('🚀 [REDUX DEBUG] Début createProduct');
-    console.log('🚀 [REDUX DEBUG] ProductData reçu:', productData);
+    console.log('🚀 [PRODUCT] Début createProduct');
+    console.log('🚀 [PRODUCT] ProductData reçu:', productData);
     
     try {
       const state = getState() as { network: { isConnected: boolean } };
-      console.log('🌐 [REDUX DEBUG] État réseau:', state.network.isConnected);
+      const isOnline = state.network.isConnected;
+      console.log('🌐 [PRODUCT] État réseau:', isOnline ? 'EN LIGNE ✅' : 'HORS LIGNE ❌');
       
       // Récupérer les informations de l'utilisateur connecté
       const { generateCreatedByFields } = await import('../../utils/userInfo');
       const createdByFields = await generateCreatedByFields();
       
-      // TOUJOURS créer localement d'abord pour éviter les blocages
-      console.log('📱 [REDUX DEBUG] Création locale prioritaire');
       const newProduct: Omit<Product, 'id'> = {
         ...productData,
         ...createdByFields,
@@ -114,13 +114,53 @@ export const createProduct = createAsyncThunk(
         sync_status: 'pending',
       };
 
-      console.log('🔄 [REDUX DEBUG] Appel databaseService.insert');
-      const id = await databaseService.insert('products', newProduct);
-      console.log('✅ [REDUX DEBUG] databaseService.insert terminé, ID:', id);
+      // ✅ BONNE PRATIQUE : MODE EN LIGNE → CRÉER DIRECTEMENT DANS FIREBASE
+      if (isOnline) {
+        console.log('🌐 [PRODUCT] MODE EN LIGNE : Création directe dans Firebase');
+        
+        try {
+          // Créer le produit dans Firebase
+          const firebaseProductId = await firebaseService.createProduct({ ...newProduct, sync_status: 'synced' as const });
+          console.log('✅ [PRODUCT] Produit créé dans Firebase:', firebaseProductId);
+
+          // Créer le stock si nécessaire
+          let firebaseStockId: string | undefined;
+          if (productData.stock_quantity !== undefined) {
+            console.log('📦 [PRODUCT] Création stock dans Firebase:', productData.stock_quantity);
+            
+            firebaseStockId = await firebaseService.createStock({
+              product_id: firebaseProductId, // Utiliser l'ID Firebase du produit
+              location_id: 'default',
+              quantity_current: productData.stock_quantity,
+              quantity_min: 0,
+              quantity_max: 1000,
+              last_movement_date: new Date().toISOString(),
+              last_movement_type: 'initial',
+              sync_status: 'synced' as const,
+              ...createdByFields,
+            });
+            console.log('✅ [PRODUCT] Stock créé dans Firebase:', firebaseStockId);
+          }
+
+          // Le listener temps réel mettra automatiquement à jour AsyncStorage
+          // Retourner directement avec les IDs Firebase
+          return {
+            ...newProduct,
+            id: firebaseProductId,
+            sync_status: 'synced' as const,
+          };
+        } catch (error: any) {
+          // Silencieux en dev/offline: pas de console.error pour éviter LogBox
+          // Fallback vers le mode offline ci-dessous
+        }
+      }
+
+      // ❌ MODE HORS LIGNE : CRÉER EN LOCAL ET AJOUTER À LA QUEUE
       
-      // Créer l'entrée de stock si stock_quantity est fourni
+      const id = await databaseService.insert('products', newProduct);
+      
+      // Créer l'entrée de stock si nécessaire
       if (productData.stock_quantity !== undefined) {
-        console.log('📦 [REDUX DEBUG] Création entrée de stock:', productData.stock_quantity);
         
         const stockData = {
           product_id: id,
@@ -136,182 +176,34 @@ export const createProduct = createAsyncThunk(
           ...createdByFields,
         };
         
-        // Si en ligne, créer d'abord dans Firebase pour obtenir l'ID Firebase
-        if (state.network.isConnected) {
-          console.log('🔄 [REDUX DEBUG] Mode ONLINE - Création stock Firebase d\'abord');
-          try {
-            const firebaseStockId = await firebaseService.createStock({
-              product_id: id,
-              location_id: 'default',
-              quantity_current: productData.stock_quantity,
-              quantity_min: 0,
-              quantity_max: 1000,
-              last_movement_date: new Date().toISOString(),
-              last_movement_type: 'initial',
-              sync_status: 'synced' as const,
-              ...createdByFields,  // ← AJOUT : Inclure created_by pour Firestore
-            });
-            console.log('✅ [REDUX DEBUG] Stock créé dans Firebase, ID:', firebaseStockId);
-            
-            // Utiliser l'ID Firebase comme ID local
-            const stockWithFirebaseId = {
-              ...stockData,
-              id: firebaseStockId, // ID Firebase comme ID local
-              firebase_id: firebaseStockId,
-              sync_status: 'synced' as const,
-            };
-            
-            // Insérer dans AsyncStorage avec l'ID Firebase
-            const existing = await AsyncStorage.getItem('stock');
-            const items = existing ? JSON.parse(existing) : [];
-            items.push(stockWithFirebaseId);
-            await AsyncStorage.setItem('stock', JSON.stringify(items));
-            
-            // Invalider le cache
-            databaseService.invalidateCache('stock');
-            
-            console.log('✅ [REDUX DEBUG] Stock créé localement avec ID Firebase:', firebaseStockId);
-          } catch (error: any) {
-            console.log('⚠️ [REDUX DEBUG] Sync stock Firebase échouée, création locale:', error.message);
-            
-            // Si échec Firebase, créer localement avec ID généré
-            const stockId = await databaseService.insert('stock', stockData);
-            console.log('✅ [REDUX DEBUG] Stock créé localement (fallback):', stockId);
-            
-            // Ajouter à la queue de sync
-            await databaseService.insert('sync_queue', {
-              table_name: 'stock',
-              record_id: stockId,
-              operation: 'create',
-              data: JSON.stringify({
-                product_id: id,
-                location_id: 'default',
-                quantity_current: productData.stock_quantity,
-                quantity_min: 0,
-                quantity_max: 1000,
-                last_movement_date: new Date().toISOString(),
-                last_movement_type: 'initial',
-                ...createdByFields,  // ← AJOUT : Inclure created_by dans la queue
-              }),
-              priority: 1,
-              status: 'pending',
-              retry_count: 0,
-              created_at: new Date().toISOString(),
-            });
-          }
-        } else {
-          // Mode offline - créer localement avec ID généré
-          console.log('📱 [REDUX DEBUG] Mode OFFLINE - Création stock locale');
-          const stockId = await databaseService.insert('stock', stockData);
-          console.log('✅ [REDUX DEBUG] Stock créé localement:', stockId);
-          
-          // Ajouter à la queue de sync
-          await databaseService.insert('sync_queue', {
-            table_name: 'stock',
-            record_id: stockId,
-            operation: 'create',
-            data: JSON.stringify({
-              product_id: id,
-              location_id: 'default',
-              quantity_current: productData.stock_quantity,
-              quantity_min: 0,
-              quantity_max: 1000,
-              last_movement_date: new Date().toISOString(),
-              last_movement_type: 'initial',
-            }),
-            priority: 1,
-            status: 'pending',
-            retry_count: 0,
-            created_at: new Date().toISOString(),
-          });
-        }
+        const stockId = await databaseService.insert('stock', stockData);
+        
+        // Ajouter à la queue de synchronisation
+        await databaseService.insert('sync_queue', {
+          table_name: 'stock',
+          record_id: stockId,
+          operation: 'create',
+          data: JSON.stringify(stockData),
+          priority: 1,
+          status: 'pending',
+          retry_count: 0,
+          created_at: new Date().toISOString(),
+        });
       }
       
-      const createdProduct = { ...newProduct, id };
-          console.log('✅ [REDUX DEBUG] Produit créé localement:', id);
-          
-          // En arrière-plan, essayer de synchroniser avec Firebase
-          if (state.network.isConnected) {
-            console.log('🔄 [REDUX DEBUG] Tentative sync Firebase en arrière-plan');
-            // Utiliser newProduct qui contient created_by, pas productData
-            const { stock_quantity, id: _, ...productDataForFirebase } = newProduct;
-            firebaseService.createProduct({ ...productDataForFirebase, sync_status: 'synced' as const }).then(firebaseId => {
-              console.log('✅ [REDUX DEBUG] Sync Firebase réussie, ID:', firebaseId);
-              // Mettre à jour le statut de sync ET le firebase_id
-              databaseService.update('products', id, { 
-                sync_status: 'synced',
-                firebase_id: firebaseId 
-              });
-            }).catch(error => {
-              // Masquer les erreurs de timeout Firebase et mode offline
-              if (error instanceof Error && error.message.includes('Timeout Firebase')) {
-                console.log('⚠️ [REDUX DEBUG] Firebase timeout (normal), produit créé localement');
-                // Ajouter à la queue de sync pour tentative ultérieure
-                console.log('🔄 [REDUX DEBUG] Ajout à la queue de synchronisation');
-                // Utiliser newProduct qui contient created_by
-                const { id: _, stock_quantity, ...dataForQueue } = newProduct;
-                databaseService.insert('sync_queue', {
-                  table_name: 'products',
-                  record_id: id,
-                  operation: 'create',
-                  data: JSON.stringify(dataForQueue),
-                  priority: 1,
-                  status: 'pending',
-                  retry_count: 0,
-                  created_at: new Date().toISOString(),
-                });
-              } else if (error instanceof Error && error.message.includes('Mode offline')) {
-                console.log('📱 [REDUX DEBUG] Mode offline - produit créé localement (normal)');
-                // Ajouter à la queue de sync pour quand on repassera en ligne
-                console.log('🔄 [REDUX DEBUG] Ajout à la queue de synchronisation pour mode offline');
-                // Utiliser newProduct qui contient created_by
-                const { id: _, stock_quantity, ...dataForQueue } = newProduct;
-                databaseService.insert('sync_queue', {
-                  table_name: 'products',
-                  record_id: id,
-                  operation: 'create',
-                  data: JSON.stringify(dataForQueue),
-                  priority: 1,
-                  status: 'pending',
-                  retry_count: 0,
-                  created_at: new Date().toISOString(),
-                });
-              } else {
-                console.log('⚠️ [REDUX DEBUG] Sync Firebase échouée:', error.message);
-                // Ajouter à la queue de sync pour tentative ultérieure
-                console.log('🔄 [REDUX DEBUG] Ajout à la queue de synchronisation');
-                // Utiliser newProduct qui contient created_by
-                const { id: _, stock_quantity, ...dataForQueue } = newProduct;
-                databaseService.insert('sync_queue', {
-                  table_name: 'products',
-                  record_id: id,
-                  operation: 'create',
-                  data: JSON.stringify(dataForQueue),
-                  priority: 1,
-                  status: 'pending',
-                  retry_count: 0,
-                  created_at: new Date().toISOString(),
-                });
-              }
-            });
-          } else {
-            // Mode offline - ajouter directement à la queue de sync
-            console.log('📱 [REDUX DEBUG] Mode offline - ajout à la queue de synchronisation');
-            // Utiliser newProduct qui contient created_by
-            const { id: _, stock_quantity, ...dataForQueue } = newProduct;
-            databaseService.insert('sync_queue', {
-              table_name: 'products',
-              record_id: id,
-              operation: 'create',
-              data: JSON.stringify(dataForQueue),
-              priority: 1,
-              status: 'pending',
-              retry_count: 0,
-              created_at: new Date().toISOString(),
-            });
-          }
+      // Ajouter le produit à la queue de synchronisation
+      await databaseService.insert('sync_queue', {
+        table_name: 'products',
+        record_id: id,
+        operation: 'create',
+        data: JSON.stringify(newProduct),
+        priority: 1,
+        status: 'pending',
+        retry_count: 0,
+        created_at: new Date().toISOString(),
+      });
       
-      return createdProduct;
+      return { ...newProduct, id };
     } catch (error: any) {
       console.error('❌ [REDUX DEBUG] Erreur createProduct:', error);
       console.error('❌ [REDUX DEBUG] Stack trace:', error?.stack);
@@ -430,14 +322,45 @@ export const deleteProduct = createAsyncThunk(
       console.log('🗑️ [REDUX DEBUG] Début deleteProduct');
       console.log('🗑️ [REDUX DEBUG] ID:', id);
 
-      // Utiliser la fonction utilitaire pour gérer la suppression offline/online
+      const state = getState() as { network: { isConnected: boolean } };
+      const isOnline = state.network.isConnected;
+
+      // Heuristique: si l'ID ne commence pas par "id-", il s'agit très probablement d'un ID Firestore
+      const looksLikeFirebaseId = !id.startsWith('id-');
+
+      if (isOnline || looksLikeFirebaseId) {
+        try {
+          await firebaseService.deleteProduct(id);
+          console.log('✅ [REDUX DEBUG] Produit supprimé dans Firebase (priorité ID):', id);
+          await databaseService.delete('products', id);
+          return id;
+        } catch (e) {
+          console.log('⚠️ [REDUX DEBUG] Suppression Firebase directe échouée, tentative via signature');
+          const products = await databaseService.getAll('products');
+          const p = products.find((p: any) => p.id === id) as any;
+          if (p) {
+            const guessedId = await firebaseService.findProductIdBySignature({
+              createdBy: p.created_by,
+              sku: p.sku,
+              name: p.name,
+              createdAtIso: p.created_at,
+            });
+            if (guessedId) {
+              await firebaseService.deleteProduct(guessedId);
+              console.log('✅ [REDUX DEBUG] Produit supprimé via signature (ID Firebase):', guessedId);
+              await databaseService.delete('products', id);
+              return id;
+            }
+          }
+          console.log('⚠️ [REDUX DEBUG] Aucune résolution d\'ID possible, fallback offline');
+        }
+      }
+
       const success = await handleOfflineDelete(id);
-      
       if (!success) {
         throw new Error('Échec de la suppression du produit');
       }
-
-      console.log('✅ [REDUX DEBUG] Produit supprimé avec succès:', id);
+      console.log('✅ [REDUX DEBUG] Produit supprimé (fallback/offline):', id);
       return id;
     } catch (error) {
       console.error('❌ [REDUX DEBUG] Erreur deleteProduct:', error);

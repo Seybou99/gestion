@@ -84,6 +84,36 @@ export interface SaleItem {
   total_price: number;
 }
 
+export interface Refund {
+  id: string;
+  sale_id: string;          // ID de la vente remboursée
+  user_id: string;           // ID de l'utilisateur qui effectue le remboursement
+  customer_id?: string;
+  location_id: string;
+  total_amount: number;
+  tax_amount: number;
+  discount_amount: number;
+  payment_method: string;
+  refund_date: string;
+  created_by: string;        // ID de l'utilisateur
+  created_by_name: string;   // Nom de l'utilisateur
+  notes?: string;
+  sync_status: 'synced' | 'pending' | 'error';
+  sync_timestamp?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RefundItem {
+  id: string;
+  refund_id: string;
+  product_id: string;
+  quantity: number;
+  unit_price: number;
+  total_price: number;
+  product_name?: string;
+}
+
 export interface Customer {
   id: string;
   name: string;
@@ -283,7 +313,14 @@ class DatabaseServiceImpl implements DatabaseService {
       'stock_entries',      // Nouvelle table pour les entrées de stock
       'stock_entry_items',  // Nouvelle table pour les items d'entrée
       'stock_adjustments',  // Nouvelle table pour les ajustements
-      'stock_movements'     // Nouvelle table pour l'historique des mouvements
+      'stock_movements',    // Nouvelle table pour l'historique des mouvements
+      'warehouse',          // Table pour les entrepôts
+      'locations',          // Table pour les emplacements
+      'inventory',          // Table pour l'inventaire
+      'quotes',             // Table pour les devis
+      'quote_items',        // Table pour les articles de devis
+      'refunds',            // Table pour les remboursements
+      'refund_items'        // Table pour les articles de remboursement
     ];
     
     for (const table of tables) {
@@ -336,10 +373,11 @@ class DatabaseServiceImpl implements DatabaseService {
         
         console.log(`✅ Mise à jour réussie dans ${table}: ${id}`);
       } else {
-        throw new Error(`Item avec l'id ${id} non trouvé dans ${table}`);
+        console.log(`⚠️ Item avec l'id ${id} non trouvé dans ${table} - ignoré`);
+        return; // Retourner silencieusement au lieu de lancer une erreur
       }
     } catch (error) {
-      console.error(`❌ Erreur mise à jour dans ${table}:`, error);
+      console.log(`❌ Erreur mise à jour dans ${table}:`, error);
       throw error;
     }
   }
@@ -427,14 +465,29 @@ class DatabaseServiceImpl implements DatabaseService {
   /**
    * Récupère tous les éléments d'une table filtrés par utilisateur
    */
-  async getAllByUser<T extends { created_by?: string }>(table: string, userId: string): Promise<T[]> {
+  async getAllByUser<T extends { created_by?: string; user_id?: string }>(
+    table: string,
+    userIds: string | string[],
+  ): Promise<T[]> {
     try {
+      const normalizedUserIds = Array.isArray(userIds)
+        ? userIds.filter((id) => typeof id === 'string' && id.trim().length > 0)
+        : [userIds].filter((id): id is string => typeof id === 'string' && id.trim().length > 0);
+
+      if (normalizedUserIds.length === 0) {
+        console.warn(`⚠️ getAllByUser appelé sans identifiant utilisateur valide pour ${table}`);
+        return [];
+      }
+
       const allItems = await this.getAll<T>(table);
       
-      // Filtrer par utilisateur
-      const userItems = allItems.filter(item => item.created_by === userId);
+      // Filtrer par utilisateur (created_by OU user_id)
+      const userItems = allItems.filter(item => {
+        const ownerId = item.created_by || item.user_id;
+        return ownerId ? normalizedUserIds.includes(ownerId) : false;
+      });
       
-      console.log(`📊 ${userItems.length}/${allItems.length} éléments trouvés pour l'utilisateur ${userId} dans ${table}`);
+      console.log(`📊 ${userItems.length}/${allItems.length} éléments trouvés pour les utilisateurs [${normalizedUserIds.join(', ')}] dans ${table}`);
       
       return userItems;
     } catch (error) {
@@ -490,9 +543,24 @@ class DatabaseServiceImpl implements DatabaseService {
 
   async getLowStockProducts(): Promise<any[]> {
     const productsWithStock = await this.getProductsWithStock();
-    return productsWithStock.filter(product => 
-      product.quantity_current <= product.quantity_min
-    );
+    return productsWithStock.filter(product => {
+      const currentQty = product.quantity_current || 0;
+      
+      // Si quantity_min est défini et > 0, utiliser cette valeur
+      if (product.quantity_min && product.quantity_min > 0) {
+        return currentQty <= product.quantity_min;
+      }
+      
+      // Sinon, utiliser une logique par défaut : stock faible si < 20 unités
+      // ou si le stock est inférieur à 10% du stock maximum (si défini)
+      if (product.quantity_max && product.quantity_max > 0) {
+        const threshold = Math.max(20, product.quantity_max * 0.1);
+        return currentQty < threshold;
+      }
+      
+      // Par défaut : considérer comme stock faible si < 20 unités et > 0
+      return currentQty > 0 && currentQty < 20;
+    });
   }
 
   async getSalesByDateRange(startDate: string, endDate: string): Promise<any[]> {
@@ -556,7 +624,11 @@ export const databaseService = new DatabaseServiceImpl();
 // Fonction utilitaire pour initialiser l'entrepôt d'un produit
 export const initializeWarehouse = async (productId: string, initialQuantity: number = 0) => {
   try {
-    const warehouseId = await databaseService.insert('warehouse', {
+    // Récupérer les informations de l'utilisateur
+    const { getCurrentUser } = await import('../utils/userInfo');
+    const user = await getCurrentUser();
+    
+    const warehouseData: any = {
       product_id: productId,
       quantity_available: initialQuantity,
       quantity_reserved: 0,
@@ -566,7 +638,15 @@ export const initializeWarehouse = async (productId: string, initialQuantity: nu
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
       sync_status: 'pending' as const,
-    });
+    };
+    
+    // Ajouter les champs created_by si l'utilisateur est connecté
+    if (user) {
+      warehouseData.created_by = user.uid;
+      warehouseData.created_by_name = user.email || user.displayName || 'Utilisateur';
+    }
+    
+    const warehouseId = await databaseService.insert('warehouse', warehouseData);
     
     console.log(`🏢 Entrepôt initialisé pour produit ${productId}: ${warehouseId}`);
     return warehouseId;

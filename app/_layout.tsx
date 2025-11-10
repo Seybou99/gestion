@@ -1,20 +1,35 @@
-import { Icon, Label, NativeTabs } from "expo-router/unstable-native-tabs";
-import React, { useEffect, useState } from 'react';
-import { ActivityIndicator, StatusBar, StyleSheet, Text, View } from 'react-native';
+import { Tabs } from 'expo-router';
+import React, { useEffect, useMemo, useState } from 'react';
+import { ActivityIndicator, StatusBar, StyleSheet, View } from 'react-native';
 import { Provider } from 'react-redux';
 import { PersistGate } from 'redux-persist/integration/react';
 
-import { LoginForm } from '../components/LoginForm';
-import { RegisterForm } from '../components/RegisterForm';
-import { AuthProvider, useAuth } from '../contexts/AuthContext';
-import { appInitializer } from '../services/AppInitializer';
-import { persistor, store } from '../store';
+import { HapticTab } from '@/components/HapticTab';
+import { LoginForm } from '@/components/LoginForm';
+import { RegisterForm } from '@/components/RegisterForm';
+import { IconSymbol } from '@/components/ui/IconSymbol';
+import TabBarBackground from '@/components/ui/TabBarBackground';
+import { Colors } from '@/constants/Colors';
+import { AuthProvider, useAuth } from '@/contexts/AuthContext';
+import { useColorScheme } from '@/hooks/useColorScheme';
+import { appInitializer } from '@/services/AppInitializer';
+import { persistor, store } from '@/store';
 
 // Composant principal de l'application avec authentification
 const AppContent: React.FC = () => {
   const { user, loading, isAuthenticated } = useAuth();
   const [showRegister, setShowRegister] = useState(false);
   const [appInitialized, setAppInitialized] = useState(false);
+  const colorScheme = useColorScheme();
+  const theme = useMemo(() => Colors[colorScheme ?? 'light'], [colorScheme]);
+  const TabBarBackgroundComponent = TabBarBackground as unknown as React.ComponentType | undefined;
+  const tabBarBackground = useMemo(
+    () =>
+      TabBarBackgroundComponent
+        ? () => <TabBarBackgroundComponent />
+        : undefined,
+    [TabBarBackgroundComponent],
+  );
 
   // Initialiser l'application au démarrage
   useEffect(() => {
@@ -37,8 +52,8 @@ const AppContent: React.FC = () => {
   // Afficher un loader pendant l'initialisation ou la vérification de l'authentification
   if (loading || !appInitialized) {
     return (
-      <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color="#007AFF" />
+      <View style={[styles.loadingContainer, { backgroundColor: theme.background }]}>
+        <ActivityIndicator size="large" color={theme.tint} />
       </View>
     );
   }
@@ -46,38 +61,82 @@ const AppContent: React.FC = () => {
   // Si l'utilisateur est connecté, afficher l'interface principale avec navigation
   if (isAuthenticated && user) {
     return (
-      <View style={styles.container}>
-        <StatusBar barStyle="dark-content" backgroundColor="#f5f5f5" />
-        <NativeTabs>
-          <NativeTabs.Trigger name="accueil">
-            <Label>Accueil</Label>
-            <Icon sf="house.fill" drawable="custom_android_drawable" />
-          </NativeTabs.Trigger>
-          <NativeTabs.Trigger name="articles">
-            <Label>Articles</Label>
-            <Icon sf="square.grid.2x2.fill" drawable="custom_articles_drawable" />
-          </NativeTabs.Trigger>
-          <NativeTabs.Trigger name="stock">
-            <Label>Inventaire</Label>
-            <Icon sf="cube.box.fill" drawable="custom_stock_drawable" />
-          </NativeTabs.Trigger>
-          <NativeTabs.Trigger name="ventes">
-            <Label>Ventes</Label>
-            <Icon sf="cart.fill" drawable="custom_sales_drawable" />
-          </NativeTabs.Trigger>
-          <NativeTabs.Trigger name="parametres">
-            <Text style={{ fontSize: 10, textAlign: 'center', color: '#666' }}>Paramètres</Text>
-            <Icon sf="gearshape.fill" drawable="custom_settings_drawable" />
-          </NativeTabs.Trigger>
-        </NativeTabs>
+      <View style={[styles.container, { backgroundColor: theme.background }]}>
+        <StatusBar
+          barStyle={colorScheme === 'dark' ? 'light-content' : 'dark-content'}
+          backgroundColor={theme.background}
+        />
+        <Tabs
+          initialRouteName="accueil"
+          screenOptions={{
+            headerShown: false,
+            tabBarActiveTintColor: theme.tint,
+            tabBarInactiveTintColor: theme.tabIconDefault,
+            tabBarButton: HapticTab,
+            tabBarStyle: {
+              backgroundColor: theme.background,
+              borderTopColor: theme.icon,
+            },
+            tabBarBackground,
+          }}
+        >
+          <Tabs.Screen
+            name="accueil"
+            options={{
+              title: 'Accueil',
+              tabBarIcon: ({ color }) => (
+                <IconSymbol name="house.fill" size={28} color={color} />
+              ),
+            }}
+          />
+          <Tabs.Screen
+            name="articles"
+            options={{
+              title: 'Articles',
+              tabBarIcon: ({ color }) => (
+                <IconSymbol name="square.grid.2x2.fill" size={28} color={color} />
+              ),
+            }}
+          />
+          <Tabs.Screen
+            name="stock"
+            options={{
+              title: 'Inventaire',
+              tabBarIcon: ({ color }) => (
+                <IconSymbol name="cube.box.fill" size={28} color={color} />
+              ),
+            }}
+          />
+          <Tabs.Screen
+            name="ventes"
+            options={{
+              title: 'Ventes',
+              tabBarIcon: ({ color }) => (
+                <IconSymbol name="cart.fill" size={28} color={color} />
+              ),
+            }}
+          />
+          <Tabs.Screen
+            name="parametres"
+            options={{
+              title: 'Paramètres',
+              tabBarIcon: ({ color }) => (
+                <IconSymbol name="gearshape.fill" size={28} color={color} />
+              ),
+            }}
+          />
+        </Tabs>
       </View>
     );
   }
 
   // Sinon, afficher le formulaire de connexion ou d'inscription
   return (
-    <View style={styles.container}>
-      <StatusBar barStyle="dark-content" backgroundColor="#f5f5f5" />
+    <View style={[styles.container, { backgroundColor: theme.background }]}>
+      <StatusBar
+        barStyle={colorScheme === 'dark' ? 'light-content' : 'dark-content'}
+        backgroundColor={theme.background}
+      />
       
       {showRegister ? (
         <RegisterForm onSwitchToLogin={() => setShowRegister(false)} />
@@ -104,14 +163,10 @@ export default function RootLayout() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f5f5f5',
   },
   loadingContainer: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: '#f5f5f5',
   },
-  // Note: Le style nativeTabs a été retiré car NativeTabs ne supporte pas
-  // la propriété style. Le centrage sera géré par le système natif.
 });

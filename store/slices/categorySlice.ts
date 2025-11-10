@@ -58,7 +58,8 @@ export const fetchCategories = createAsyncThunk(
         return [];
       }
       
-      const localCategories = await databaseService.getAllByUser('categories', currentUser.uid) as Category[];
+      const allowedOwners = currentUser.allowedOwnerIds || [currentUser.uid];
+      const localCategories = await databaseService.getAllByUser('categories', allowedOwners) as Category[];
       console.log(`✅ [CATEGORY REDUX DEBUG] ${localCategories.length} catégories chargées pour l'utilisateur ${currentUser.email}`);
       
       return localCategories;
@@ -73,24 +74,51 @@ export const createCategory = createAsyncThunk(
   'categories/createCategory',
   async (categoryData: Omit<Category, 'id' | 'created_at' | 'updated_at' | 'sync_status'>, { dispatch, getState, rejectWithValue }) => {
     try {
-      console.log('🚀 [CATEGORY REDUX DEBUG] Début createCategory');
-      console.log('🚀 [CATEGORY REDUX DEBUG] CategoryData reçu:', categoryData);
+      console.log('🚀 [CATEGORY] Début createCategory');
+      console.log('🚀 [CATEGORY] CategoryData reçu:', categoryData);
 
       const state = getState() as any;
-      console.log('🌐 [CATEGORY REDUX DEBUG] État réseau:', state.network.isConnected);
+      const isOnline = state.network.isConnected;
+      console.log('🌐 [CATEGORY] État réseau:', isOnline ? 'EN LIGNE ✅' : 'HORS LIGNE ❌');
 
       // Générer les champs created_by et created_by_name
-      const { getCurrentUser } = await import('../../utils/userInfo');
+      const { getCurrentUser, generateCreatedByFields } = await import('../../utils/userInfo');
       const currentUser = await getCurrentUser();
-      const createdByFields = {
-        created_by: currentUser?.uid || 'unknown',
-        created_by_name: currentUser?.displayName || currentUser?.email || 'Utilisateur inconnu',
-      };
-      console.log('👤 [CATEGORY DEBUG] Utilisateur créateur:', createdByFields);
+      const createdByFields = await generateCreatedByFields();
+      console.log('👤 [CATEGORY] Utilisateur créateur:', createdByFields);
 
-      // 1. CRÉATION LOCALE PRIORITAIRE
-      console.log('📱 [CATEGORY REDUX DEBUG] Création locale prioritaire');
-      console.log('🔄 [CATEGORY REDUX DEBUG] Appel databaseService.insert');
+      const categoryDataWithUser = { ...categoryData, ...createdByFields };
+
+      // ✅ BONNE PRATIQUE : MODE EN LIGNE → ÉCRIRE DIRECTEMENT DANS FIREBASE
+      if (isOnline) {
+        console.log('🌐 [CATEGORY] MODE EN LIGNE : Création directe dans Firebase');
+        
+        try {
+          // Créer directement dans Firebase
+          const firebaseId = await firebaseService.createCategory(categoryDataWithUser);
+          console.log('✅ [CATEGORY] Catégorie créée dans Firebase:', firebaseId);
+          
+          // Le listener temps réel mettra automatiquement à jour AsyncStorage
+          // Pas besoin de création locale manuelle !
+          
+          return { 
+            id: firebaseId,
+            ...categoryData,
+            ...createdByFields,
+            sync_status: 'synced' as const,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+          };
+        } catch (error) {
+          console.error('❌ [CATEGORY] Erreur création Firebase:', error);
+          // Si échec Firebase, basculer en mode offline
+          console.log('⚠️ [CATEGORY] Basculement en mode offline après échec Firebase');
+          // Continue vers le mode offline ci-dessous
+        }
+      }
+
+      // ❌ MODE HORS LIGNE : CRÉER EN LOCAL ET AJOUTER À LA QUEUE
+      console.log('📱 [CATEGORY] MODE HORS LIGNE : Création locale + queue de synchronisation');
       
       const id = await databaseService.insert('categories', {
         ...categoryData,
@@ -100,55 +128,20 @@ export const createCategory = createAsyncThunk(
         updated_at: new Date().toISOString(),
       });
       
-      console.log('✅ [CATEGORY REDUX DEBUG] databaseService.insert terminé, ID:', id);
-      console.log('✅ [CATEGORY REDUX DEBUG] Catégorie créée localement:', id);
+      console.log('✅ [CATEGORY] Catégorie créée localement:', id);
       
-      // En arrière-plan, essayer de synchroniser avec Firebase
-      if (state.network.isConnected) {
-        console.log('🔄 [CATEGORY REDUX DEBUG] Tentative sync Firebase en arrière-plan');
-        const categoryDataWithUser = { ...categoryData, ...createdByFields };
-        firebaseService.createCategory(categoryDataWithUser).then(firebaseId => {
-          console.log('✅ [CATEGORY REDUX DEBUG] Sync Firebase réussie, ID:', firebaseId);
-          // Mettre à jour le statut de sync ET le firebase_id
-          databaseService.update('categories', id, { 
-            sync_status: 'synced',
-            firebase_id: firebaseId 
-          });
-        }).catch(error => {
-          // Masquer les erreurs de timeout Firebase et mode offline
-          if (error instanceof Error && error.message.includes('Timeout Firebase')) {
-            console.log('⚠️ [CATEGORY REDUX DEBUG] Firebase timeout (normal), catégorie créée localement');
-            // Ajouter à la queue de sync pour tentative ultérieure
-            console.log('🔄 [CATEGORY REDUX DEBUG] Ajout à la queue de synchronisation');
-            databaseService.insert('sync_queue', {
-              table_name: 'categories',
-              record_id: id,
-              operation: 'create',
-              data: JSON.stringify(categoryDataWithUser),
-              priority: 1,
-              status: 'pending',
-              retry_count: 0,
-              created_at: new Date().toISOString(),
-            });
-          } else if (error instanceof Error && error.message.includes('Mode offline')) {
-            console.log('📱 [CATEGORY REDUX DEBUG] Mode offline - catégorie créée localement (normal)');
-            // Ajouter à la queue de sync pour tentative ultérieure
-            databaseService.insert('sync_queue', {
-              table_name: 'categories',
-              record_id: id,
-              operation: 'create',
-              data: JSON.stringify(categoryDataWithUser),
-              priority: 1,
-              status: 'pending',
-              retry_count: 0,
-              created_at: new Date().toISOString(),
-            });
-          } else {
-            console.error('❌ [CATEGORY REDUX DEBUG] Erreur Firebase:', error);
-            databaseService.update('categories', id, { sync_status: 'error' });
-          }
-        });
-      }
+      // Ajouter à la queue de synchronisation
+      await databaseService.insert('sync_queue', {
+        table_name: 'categories',
+        record_id: id,
+        operation: 'create',
+        data: JSON.stringify(categoryDataWithUser),
+        priority: 1,
+        status: 'pending',
+        retry_count: 0,
+        created_at: new Date().toISOString(),
+      });
+      console.log('📋 [CATEGORY] Ajouté à la queue de synchronisation');
 
       return { 
         id, 
@@ -159,7 +152,7 @@ export const createCategory = createAsyncThunk(
         updated_at: new Date().toISOString()
       };
     } catch (error) {
-      console.error('❌ [CATEGORY REDUX DEBUG] Erreur createCategory:', error);
+      console.error('❌ [CATEGORY] Erreur createCategory:', error);
       return rejectWithValue(error instanceof Error ? error.message : 'Erreur lors de la création de la catégorie');
     }
   }
@@ -169,67 +162,61 @@ export const updateCategory = createAsyncThunk(
   'categories/updateCategory',
   async ({ id, updates }: { id: string; updates: Partial<Category> }, { dispatch, getState, rejectWithValue }) => {
     try {
-      console.log('🔄 [CATEGORY REDUX DEBUG] Début updateCategory');
-      console.log('🔄 [CATEGORY REDUX DEBUG] ID:', id);
-      console.log('🔄 [CATEGORY REDUX DEBUG] Updates:', updates);
+      console.log('🔄 [CATEGORY] Début updateCategory');
+      console.log('🔄 [CATEGORY] ID:', id);
+      console.log('🔄 [CATEGORY] Updates:', updates);
 
       const state = getState() as any;
+      const isOnline = state.network.isConnected;
+      console.log('🌐 [CATEGORY] État réseau:', isOnline ? 'EN LIGNE ✅' : 'HORS LIGNE ❌');
 
-      // 1. MISE À JOUR LOCALE PRIORITAIRE
       const updateData = {
         ...updates,
         updated_at: new Date().toISOString(),
-        sync_status: 'pending' as const,
       };
 
-      await databaseService.update('categories', id, updateData);
-      console.log('✅ [CATEGORY REDUX DEBUG] Catégorie mise à jour localement:', id);
-      
-      // En arrière-plan, essayer de synchroniser avec Firebase
-      if (state.network.isConnected) {
-        console.log('🔄 [CATEGORY REDUX DEBUG] Tentative sync Firebase en arrière-plan');
-        firebaseService.updateCategory(id, updates).then(() => {
-          console.log('✅ [CATEGORY REDUX DEBUG] Sync Firebase réussie');
-          // Mettre à jour le statut de sync (le firebase_id existe déjà)
-          databaseService.update('categories', id, { sync_status: 'synced' });
-        }).catch(error => {
-          // Masquer les erreurs de timeout Firebase et mode offline
-          if (error instanceof Error && error.message.includes('Timeout Firebase')) {
-            console.log('⚠️ [CATEGORY REDUX DEBUG] Firebase timeout (normal), catégorie mise à jour localement');
-            // Ajouter à la queue de sync pour tentative ultérieure
-            databaseService.insert('sync_queue', {
-              table_name: 'categories',
-              record_id: id,
-              operation: 'update',
-              data: JSON.stringify(updates),
-              priority: 1,
-              status: 'pending',
-              retry_count: 0,
-              created_at: new Date().toISOString(),
-            });
-          } else if (error instanceof Error && error.message.includes('Mode offline')) {
-            console.log('📱 [CATEGORY REDUX DEBUG] Mode offline - catégorie mise à jour localement (normal)');
-            // Ajouter à la queue de sync pour tentative ultérieure
-            databaseService.insert('sync_queue', {
-              table_name: 'categories',
-              record_id: id,
-              operation: 'update',
-              data: JSON.stringify(updates),
-              priority: 1,
-              status: 'pending',
-              retry_count: 0,
-              created_at: new Date().toISOString(),
-            });
-          } else {
-            console.error('❌ [CATEGORY REDUX DEBUG] Erreur Firebase:', error);
-            databaseService.update('categories', id, { sync_status: 'error' });
-          }
-        });
+      // ✅ BONNE PRATIQUE : MODE EN LIGNE → METTRE À JOUR DIRECTEMENT FIREBASE
+      if (isOnline) {
+        console.log('🌐 [CATEGORY] MODE EN LIGNE : Mise à jour directe dans Firebase');
+        
+        try {
+          await firebaseService.updateCategory(id, updates);
+          console.log('✅ [CATEGORY] Catégorie mise à jour dans Firebase:', id);
+          
+          // Le listener temps réel mettra automatiquement à jour AsyncStorage
+          return { id, ...updates };
+        } catch (error) {
+          console.error('❌ [CATEGORY] Erreur mise à jour Firebase:', error);
+          console.log('⚠️ [CATEGORY] Basculement en mode offline après échec Firebase');
+          // Continue vers le mode offline ci-dessous
+        }
       }
+
+      // ❌ MODE HORS LIGNE : METTRE À JOUR EN LOCAL ET AJOUTER À LA QUEUE
+      console.log('📱 [CATEGORY] MODE HORS LIGNE : Mise à jour locale + queue');
+      
+      await databaseService.update('categories', id, {
+        ...updateData,
+        sync_status: 'pending',
+      });
+      console.log('✅ [CATEGORY] Catégorie mise à jour localement:', id);
+      
+      // Ajouter à la queue de synchronisation
+      await databaseService.insert('sync_queue', {
+        table_name: 'categories',
+        record_id: id,
+        operation: 'update',
+        data: JSON.stringify(updates),
+        priority: 1,
+        status: 'pending',
+        retry_count: 0,
+        created_at: new Date().toISOString(),
+      });
+      console.log('📋 [CATEGORY] Ajouté à la queue de synchronisation');
 
       return { id, ...updates };
     } catch (error) {
-      console.error('❌ [CATEGORY REDUX DEBUG] Erreur updateCategory:', error);
+      console.error('❌ [CATEGORY] Erreur updateCategory:', error);
       return rejectWithValue(error instanceof Error ? error.message : 'Erreur lors de la mise à jour de la catégorie');
     }
   }

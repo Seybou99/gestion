@@ -6,7 +6,11 @@ import {
     Alert,
     Dimensions,
     FlatList,
+  Image,
+  Keyboard,
+  KeyboardAvoidingView,
     Modal,
+  Platform,
     ScrollView,
     StyleSheet,
     Text,
@@ -17,6 +21,8 @@ import {
 import { useDispatch, useSelector } from 'react-redux';
 import { QRScanner } from '../../components/QRScanner';
 import { databaseService } from '../../services/DatabaseService';
+import { firebaseService } from '../../services/FirebaseService';
+import { networkService } from '../../services/NetworkService';
 import { syncService } from '../../services/SyncService';
 import { AppDispatch, RootState } from '../../store';
 import { fetchProducts, updateStockLocally } from '../../store/slices/productSlice';
@@ -57,13 +63,19 @@ interface CartItem {
   price: number;
   quantity: number;
   total: number;
+  image?: string; // Image du produit
 }
 
 interface Customer {
   id: string;
   name: string;
   phone?: string;
+  email?: string;
+  address?: string;
   customer_type: 'retail' | 'wholesale';
+  created_by?: string;
+  created_by_name?: string;
+  firebase_id?: string; // ID Firebase si synchronisé
 }
 
 /**
@@ -129,21 +141,76 @@ export default function VentesScreen() {
       setLoading(true);
       await dispatch(fetchProducts());
       
+      // Invalider le cache des clients pour forcer le rechargement
+      databaseService.invalidateCache('customers');
+      
       // Charger les clients depuis la base de données locale (exclure ceux marqués pour suppression)
       const allCustomers = await (async () => {
         const user = await getCurrentUser();
         if (!user) {
-          console.warn('⚠️ Utilisateur non connecté pour customers');
+          console.warn('⚠️ [VENTES] Utilisateur non connecté pour customers');
           return [];
         }
-        return await databaseService.getAllByUser('customers', user.uid);
+        
+        console.log(`📊 [VENTES] Chargement des clients pour l'utilisateur: ${user.email} (${user.uid})`);
+        const customers = await databaseService.getAllByUser('customers', user.uid);
+        console.log(`📊 [VENTES] ${customers.length} clients récupérés depuis getAllByUser`);
+        
+        return customers;
       })() as Customer[];
-      const customersData = allCustomers.filter(customer => !(customer as any).to_delete);
-      setCustomers(customersData);
       
-      console.log(`👥 ${customersData.length} clients chargés`);
+      // Filtrer uniquement les clients marqués pour suppression
+      // getAllByUser filtre déjà par created_by, donc pas besoin de re-filtrer
+      const filteredCustomers = allCustomers.filter(customer => {
+        const hasToDelete = (customer as any).to_delete === true;
+        
+        if (hasToDelete) {
+          console.log(`🗑️ [VENTES] Client ${customer.id} marqué pour suppression, exclu`);
+        }
+        
+        return !hasToDelete;
+      });
+      
+      // Dédupliquer par firebase_id ou id (éviter les doublons créés par RealtimeSync)
+      const uniqueCustomersMap = new Map<string, Customer>();
+      
+      filteredCustomers.forEach((customer: any) => {
+        // Utiliser firebase_id comme clé principale, sinon id local
+        const key = customer.firebase_id || customer.id;
+        
+        // Si on a déjà un client avec ce firebase_id, garder celui avec le plus d'informations
+        if (uniqueCustomersMap.has(key)) {
+          const existing = uniqueCustomersMap.get(key)!;
+          // Garder celui qui a le firebase_id si l'autre ne l'a pas
+          if (customer.firebase_id && !existing.firebase_id) {
+            uniqueCustomersMap.set(key, customer);
+            console.log(`🔄 [VENTES] Remplacement doublon: ${existing.id} par ${customer.id} (firebase_id: ${customer.firebase_id})`);
+          } else {
+            console.log(`⏭️ [VENTES] Doublon ignoré: ${customer.id} (déjà existe: ${existing.id})`);
+          }
+        } else {
+          uniqueCustomersMap.set(key, customer);
+        }
+      });
+      
+      const customersData = Array.from(uniqueCustomersMap.values());
+      console.log(`👥 [VENTES] ${customersData.length} clients chargés après filtrage et déduplication (${filteredCustomers.length} avant déduplication)`);
+      
+      if (customersData.length === 0 && allCustomers.length > 0) {
+        const user = await getCurrentUser();
+        console.warn(`⚠️ [VENTES] ${allCustomers.length} clients trouvés mais aucun ne correspond aux critères de filtrage`);
+        console.log(`🔍 [VENTES] Détails des clients filtrés:`, allCustomers.map((c: any) => ({
+          id: c.id,
+          name: c.name,
+          created_by: c.created_by,
+          firebase_id: c.firebase_id,
+          user_uid: user?.uid
+        })));
+      }
+      
+      setCustomers(customersData);
     } catch (error) {
-      console.error('Erreur chargement données:', error);
+      console.error('❌ [VENTES] Erreur chargement données:', error);
     } finally {
       setLoading(false);
     }
@@ -189,6 +256,11 @@ export default function VentesScreen() {
     if (existingItem) {
       updateCartQuantity(product.id, existingItem.quantity + 1);
     } else {
+      // Récupérer l'image du produit (support pour images string ou array)
+      const productImage = product.images 
+        ? (Array.isArray(product.images) ? product.images[0] : product.images)
+        : undefined;
+      
       const newItem: CartItem = {
         id: `${product.id}-${Date.now()}`,
         product_id: product.id,
@@ -196,6 +268,7 @@ export default function VentesScreen() {
         price: product.price_sell,
         quantity: 1,
         total: product.price_sell,
+        image: productImage,
       };
       setCart([...cart, newItem]);
     }
@@ -300,14 +373,17 @@ export default function VentesScreen() {
       console.log('🔍 [DEBUG] Utilisateur actuel:', user);
       console.log('🔍 [DEBUG] isConnected:', isConnected);
       
-      // Créer un utilisateur par défaut si nécessaire
-      const defaultUser = {
-        uid: 'default-user-pos',
-        displayName: 'Vendeur POS',
-        email: 'pos@gestion.com'
-      };
+      // Récupérer l'utilisateur Firebase authentifié
+      const { getCurrentUser } = await import('../../utils/userInfo');
+      const currentUser = await getCurrentUser();
       
-      const currentUser = user || defaultUser;
+      if (!currentUser) {
+        Alert.alert('Erreur', 'Vous devez être connecté pour effectuer une vente');
+        setLoading(false);
+        return;
+      }
+      
+      console.log('✅ [DEBUG] Utilisateur Firebase:', currentUser);
       
       // Créer la vente avec informations utilisateur
       const saleData = {
@@ -331,48 +407,94 @@ export default function VentesScreen() {
       console.log('🔍 [DEBUG] Données de vente:', saleData);
 
       const saleId = await databaseService.insert('sales', saleData);
+      console.log('✅ [DEBUG] Vente créée avec ID:', saleId);
 
       // Créer les items de vente
+      console.log('🔍 [DEBUG] Création des items de vente pour', cart.length, 'articles');
       for (const item of cart) {
-        await databaseService.insert('sale_items', {
+        const itemData = {
           sale_id: saleId,
           product_id: item.product_id,
           quantity: item.quantity,
           unit_price: item.price,
           total_price: item.total,
-        });
+          product_name: item.name, // Ajouter le nom du produit
+        };
+        console.log('🔍 [DEBUG] Item de vente:', itemData);
+        await databaseService.insert('sale_items', itemData);
+        console.log('✅ [DEBUG] Item de vente créé');
 
         // Mettre à jour le stock
-        const stockItems = await databaseService.query('SELECT * FROM stock WHERE product_id = ?', [item.product_id]);
+        const allStockItems = await databaseService.getAll('stock') as any[];
+        const stockItems = allStockItems.filter(stock => stock.product_id === item.product_id);
         if (stockItems.length > 0) {
           const stockItem = stockItems[0] as any;
           const newStock = stockItem.quantity_current - item.quantity;
           
-          await databaseService.update('stock', stockItem.id, {
-            quantity_current: newStock,
-            last_movement_date: new Date().toISOString(),
-            last_movement_type: 'out',
-            sync_status: 'pending',
-          });
+          // Vérifier si on est en ligne
+          const isOnline = await networkService.isConnected();
           
-          // Ajouter la mise à jour de stock à la queue de synchronisation
-          console.log('🔍 [DEBUG] Ajout mise à jour stock à la queue:', {
-            table: 'stock',
-            id: stockItem.id,
-            operation: 'update',
-            data: {
+          if (isOnline) {
+            // Mode ONLINE : Mettre à jour directement dans Firebase
+            try {
+              console.log(`🌐 [VENTE ONLINE] Mise à jour stock dans Firebase: ${item.name} -> ${newStock}`);
+              
+              // Essayer de mettre à jour le stock dans Firebase
+              await firebaseService.updateStockByProductId(item.product_id, {
+                quantity_current: newStock,
+                last_movement_date: new Date().toISOString(),
+                last_movement_type: 'out',
+              });
+              
+              // Si succès, marquer comme synchronisé
+              await databaseService.update('stock', stockItem.id, {
+                quantity_current: newStock,
+                last_movement_date: new Date().toISOString(),
+                last_movement_type: 'out',
+                sync_status: 'synced',
+              });
+              
+              console.log(`✅ [VENTE ONLINE] Stock mis à jour dans Firebase: ${item.name} -> ${newStock}`);
+            } catch (firebaseError) {
+              console.warn(`⚠️ [VENTE ONLINE] Erreur Firebase, fallback local:`, firebaseError);
+              
+              // Si Firebase échoue, fallback vers le mode offline
+              await databaseService.update('stock', stockItem.id, {
+                quantity_current: newStock,
+                last_movement_date: new Date().toISOString(),
+                last_movement_type: 'out',
+                sync_status: 'pending',
+              });
+              
+              // Ajouter à la queue de synchronisation
+              await syncService.addToSyncQueue('stock', stockItem.id, 'update', {
+                product_id: item.product_id,
+                quantity_current: newStock,
+                last_movement_date: new Date().toISOString(),
+                last_movement_type: 'out',
+              });
+              
+              console.log(`📋 [VENTE ONLINE] Stock ajouté à la queue (fallback): ${item.name} -> ${newStock}`);
+            }
+          } else {
+            // Mode OFFLINE : Mettre à jour localement et ajouter à la queue
+            await databaseService.update('stock', stockItem.id, {
               quantity_current: newStock,
               last_movement_date: new Date().toISOString(),
               last_movement_type: 'out',
-            }
-          });
-          
-          await syncService.addToSyncQueue('stock', stockItem.id, 'update', {
-            product_id: item.product_id,  // Important : inclure le product_id pour Firebase
-            quantity_current: newStock,
-            last_movement_date: new Date().toISOString(),
-            last_movement_type: 'out',
-          });
+              sync_status: 'pending',
+            });
+            
+            // Ajouter à la queue de synchronisation
+            await syncService.addToSyncQueue('stock', stockItem.id, 'update', {
+              product_id: item.product_id,
+              quantity_current: newStock,
+              last_movement_date: new Date().toISOString(),
+              last_movement_type: 'out',
+            });
+            
+            console.log(`📱 [VENTE OFFLINE] Stock réduit localement et ajouté à la queue: ${item.name} -> ${newStock}`);
+          }
           
           // Mettre à jour le stock dans le store Redux pour un affichage instantané
           dispatch(updateStockLocally({ productId: item.product_id, newStock }));
@@ -380,22 +502,14 @@ export default function VentesScreen() {
       }
 
       // Ajouter à la queue de synchronisation
+      console.log('🔍 [DEBUG] Ajout de la vente à la queue de synchronisation');
       await syncService.addToSyncQueue('sales', saleId, 'create', saleData);
+      console.log('✅ [DEBUG] Vente ajoutée à la queue de synchronisation');
       
-      // Synchroniser immédiatement si en ligne
-      if (isConnected) {
-        try {
-          setSyncStatus('syncing');
-          await syncService.startSync();
-          setSyncStatus('synced');
-          console.log('✅ Vente synchronisée immédiatement');
-        } catch (error) {
-          setSyncStatus('pending');
-          console.log('⚠️ Erreur synchronisation immédiate, sera retentée plus tard');
-        }
-      } else {
-        setSyncStatus('pending');
-      }
+      // La synchronisation se fera automatiquement en arrière-plan
+      // Pas besoin d'appeler startSync() ici
+      setSyncStatus(isConnected ? 'pending' : 'pending');
+      console.log('📋 [DEBUG] Vente en attente de synchronisation automatique');
 
       // Rafraîchir les produits pour mettre à jour le stock
       await dispatch(fetchProducts());
@@ -422,7 +536,13 @@ export default function VentesScreen() {
     }
   };
 
-  const renderProduct = ({ item: product }: { item: any }) => (
+  const renderProduct = ({ item: product }: { item: any }) => {
+    // Récupérer l'image du produit (support pour images string ou array)
+    const productImage = product.images 
+      ? (Array.isArray(product.images) ? product.images[0] : product.images)
+      : null;
+    
+    return (
     <TouchableOpacity
       style={styles.productCard}
       onPress={() => addToCart(product)}
@@ -430,7 +550,17 @@ export default function VentesScreen() {
     >
       {/* Image du produit */}
       <View style={styles.productImageContainer}>
-        <Text style={styles.productImage}>📦</Text>
+          {productImage ? (
+            <Image 
+              source={{ uri: productImage }} 
+              style={styles.productImage}
+              resizeMode="cover"
+            />
+          ) : (
+            <View style={styles.productImagePlaceholder}>
+              <Text style={styles.productImagePlaceholderText}>📦</Text>
+            </View>
+          )}
       </View>
       
       {/* Informations essentielles */}
@@ -444,13 +574,22 @@ export default function VentesScreen() {
       </View>
     </TouchableOpacity>
   );
+  };
 
   const renderCartItem = ({ item }: { item: CartItem }) => (
     <View style={styles.cartItem}>
       {/* Image et nom du produit */}
       <View style={styles.cartItemLeft}>
         <View style={styles.cartItemImage}>
+          {item.image ? (
+            <Image 
+              source={{ uri: item.image }} 
+              style={styles.cartItemImageSource}
+              resizeMode="cover"
+            />
+          ) : (
           <Text style={styles.cartItemImageText}>📦</Text>
+          )}
         </View>
         <View style={styles.cartItemInfo}>
           <Text style={styles.cartItemName} numberOfLines={2}>
@@ -505,28 +644,36 @@ export default function VentesScreen() {
 
       setLoading(true);
 
-      // Créer le client localement
+      // Récupérer les informations de l'utilisateur actuel
+      const user = await getCurrentUser();
+      
+      if (!user) {
+        Alert.alert('Erreur', 'Utilisateur non connecté');
+        setLoading(false);
+        return;
+      }
+
+      // Créer le client localement avec created_by
       const customerData = {
         ...newCustomer,
+        created_by: user.uid,
+        created_by_name: user.email || user.displayName || 'Utilisateur',
         created_at: new Date().toISOString(),
         sync_status: 'pending' as const,
       };
 
       const customerId = await databaseService.insert('customers', customerData);
-      console.log(`✅ Client créé localement: ${customerId}`);
+      console.log(`✅ Client créé localement: ${customerId} pour l'utilisateur ${user.email}`);
+
+      // Invalider le cache pour forcer le rechargement
+      databaseService.invalidateCache('customers');
 
       // Ajouter à la queue de synchronisation
       await syncService.addToSyncQueue('customers', customerId, 'create', customerData);
-
-      // Synchroniser immédiatement si en ligne
-      if (isConnected) {
-        try {
-          await syncService.startSync();
-          console.log('✅ Client synchronisé immédiatement');
-        } catch (error) {
-          console.log('⚠️ Erreur synchronisation immédiate, sera retentée plus tard');
-        }
-      }
+      console.log('📋 [DEBUG] Client en attente de synchronisation automatique');
+      
+      // La synchronisation se fera automatiquement en arrière-plan
+      // Pas besoin d'appeler startSync() ici
 
       // Recharger les clients
       await loadData();
@@ -566,18 +713,23 @@ export default function VentesScreen() {
               setLoading(true);
               
               // Récupérer les données du client avant suppression pour la sync
-              const customerData = await databaseService.getById('customers', customerId);
+              const customerData = await databaseService.getById('customers', customerId) as any;
+              
+              // Supprimer immédiatement en local
+              await databaseService.delete('customers', customerId);
+              console.log(`🗑️ Client "${customerName}" supprimé localement`);
+              
+              // Invalider le cache
+              databaseService.invalidateCache('customers');
               
               // Ajouter à la queue de synchronisation pour suppression en ligne
               if (customerData) {
                 await syncService.addToSyncQueue('customers', customerId, 'delete', customerData);
-                console.log(`🗑️ Client "${customerName}" ajouté à la queue de suppression`);
-                
-                // Marquer le client comme "à supprimer" au lieu de le supprimer immédiatement
-                await databaseService.update('customers', customerId, {
-                  sync_status: 'pending',
-                  to_delete: true
-                });
+                if (customerData.firebase_id) {
+                  console.log(`🗑️ Client "${customerName}" ajouté à la queue de suppression Firebase`);
+                } else {
+                  console.log(`🗑️ Client "${customerName}" ajouté à la queue de suppression (pas de firebase_id)`);
+                }
               }
               
               // Si un client sélectionné est supprimé, le désélectionner
@@ -602,7 +754,6 @@ export default function VentesScreen() {
   };
 
   const renderCustomer = ({ item: customer }: { item: Customer }) => (
-    <View style={styles.customerCardContainer}>
       <TouchableOpacity
         style={[
           styles.customerCard,
@@ -622,15 +773,16 @@ export default function VentesScreen() {
             <Text style={styles.customerPhone}>{customer.phone}</Text>
           )}
         </View>
-      </TouchableOpacity>
       <TouchableOpacity
         style={styles.deleteCustomerButton}
-        onPress={() => deleteCustomer(customer.id, customer.name)}
+        onPress={() => {
+          deleteCustomer(customer.id, customer.name);
+        }}
         disabled={loading}
       >
-        <Ionicons name="trash-outline" size={dynamicSizes.button.size} color="#FF3B30" />
+        <Ionicons name="trash-outline" size={20} color="#FF3B30" />
       </TouchableOpacity>
-    </View>
+    </TouchableOpacity>
   );
 
   if (loading && products.length === 0) {
@@ -658,7 +810,7 @@ export default function VentesScreen() {
               <Text style={styles.syncText}>
                 {syncStatus === 'synced' ? 'Synchronisé' : 
                  syncStatus === 'syncing' ? 'Synchronisation...' : 
-                 'En attente de sync'}
+                 'En attente'}
               </Text>
             </View>
           </View>
@@ -781,7 +933,13 @@ export default function VentesScreen() {
               
               <TouchableOpacity
                 style={styles.customerButton}
-                onPress={() => setShowCustomers(!showCustomers)}
+                onPress={async () => {
+                  if (!showCustomers) {
+                    // Recharger les clients quand on ouvre la section
+                    await loadData();
+                  }
+                  setShowCustomers(!showCustomers);
+                }}
               >
                 <Text style={styles.customerButtonText}>
                   👤 {selectedCustomer ? selectedCustomer.name : 'Sélectionner Client'}
@@ -813,6 +971,12 @@ export default function VentesScreen() {
           <View style={styles.customersSection}>
             <View style={styles.customersSectionHeader}>
               <View style={styles.customersHeaderLeft}>
+                <TouchableOpacity
+                  style={styles.backButton}
+                  onPress={() => setShowCustomers(false)}
+                >
+                  <Ionicons name="arrow-back" size={24} color="#007AFF" />
+                </TouchableOpacity>
                 <Text style={styles.customersTitle}>Clients</Text>
                 {customers.length > 1 && (
                   <TouchableOpacity
@@ -887,21 +1051,36 @@ export default function VentesScreen() {
         visible={showAddCustomerModal}
         animationType="slide"
         transparent={true}
-        onRequestClose={() => setShowAddCustomerModal(false)}
+        onRequestClose={() => {
+          Keyboard.dismiss();
+          setShowAddCustomerModal(false);
+        }}
       >
-        <View style={styles.modalOverlay}>
+        <KeyboardAvoidingView
+          style={styles.modalOverlay}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}
+        >
           <View style={styles.modalContent}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Nouveau Client</Text>
               <TouchableOpacity
-                onPress={() => setShowAddCustomerModal(false)}
+                onPress={() => {
+                  Keyboard.dismiss();
+                  setShowAddCustomerModal(false);
+                }}
                 style={styles.modalCloseButton}
               >
                 <Ionicons name="close-circle" size={32} color="#666" />
               </TouchableOpacity>
             </View>
 
-            <ScrollView style={styles.modalBody} showsVerticalScrollIndicator={false}>
+            <ScrollView 
+              style={styles.modalBody}
+              contentContainerStyle={styles.modalScrollContent}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={true}
+            >
               {/* Nom */}
               <View style={styles.formGroup}>
                 <Text style={styles.formLabel}>Nom *</Text>
@@ -1004,7 +1183,7 @@ export default function VentesScreen() {
               </TouchableOpacity>
             </View>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
     </View>
   );
@@ -1188,6 +1367,11 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     marginRight: dynamicSizes.spacing.md,
+    overflow: 'hidden',
+  },
+  cartItemImageSource: {
+    width: '100%',
+    height: '100%',
   },
   cartItemImageText: {
     fontSize: 20,
@@ -1305,20 +1489,24 @@ const styles = StyleSheet.create({
   customersSection: {
     flex: 1,
     backgroundColor: '#fff',
+    
     zIndex: 2,
   },
   customersSectionHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    padding: 16,
-    borderBottomWidth: 1,
+    padding: 7,
     borderBottomColor: '#e0e0e0',
   },
   customersHeaderLeft: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
+  },
+  backButton: {
+    padding: 8,
+    marginRight: 4,
   },
   customersTitle: {
     fontSize: 18,
@@ -1344,6 +1532,9 @@ const styles = StyleSheet.create({
     marginBottom: 8,
     borderWidth: 1,
     borderColor: '#e0e0e0',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
   },
   customerCardSelected: {
     backgroundColor: '#e3f2fd',
@@ -1373,14 +1564,14 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   deleteCustomerButton: {
-    padding: dynamicSizes.spacing.sm,
-    marginLeft: dynamicSizes.spacing.sm,
+    padding: 8,
     borderRadius: 6,
     backgroundColor: '#fff',
     borderWidth: 1,
     borderColor: '#FF3B30',
     justifyContent: 'center',
     alignItems: 'center',
+    marginLeft: 12,
   },
   noCustomerButton: {
     backgroundColor: '#f0f0f0',
@@ -1431,6 +1622,20 @@ const styles = StyleSheet.create({
     marginBottom: dynamicSizes.spacing.sm,
   },
   productImage: {
+    width: isTablet ? 80 : 60,
+    height: isTablet ? 80 : 60,
+    borderRadius: 8,
+    backgroundColor: '#f0f0f0',
+  },
+  productImagePlaceholder: {
+    width: isTablet ? 80 : 60,
+    height: isTablet ? 80 : 60,
+    borderRadius: 8,
+    backgroundColor: '#f0f0f0',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  productImagePlaceholderText: {
     fontSize: isTablet ? 28 : 24,
   },
   productDetails: {
@@ -1488,6 +1693,9 @@ const styles = StyleSheet.create({
   },
   modalBody: {
     padding: 16,
+  },
+  modalScrollContent: {
+    paddingBottom: 200, // Espace supplémentaire pour permettre de scroller au-delà du clavier
   },
   formGroup: {
     marginBottom: 16,

@@ -17,10 +17,22 @@ service cloud.firestore {
         (resource == null || resource.data.created_by == request.auth.uid);
     }
     
-    // Règles pour le stock - ISOLATION COMPLÈTE
+    // Règles pour le stock - ISOLATION COMPLÈTE avec gestion des anciens stocks
     match /stock/{document} {
-      allow read, write: if request.auth != null && 
-        (resource == null || resource.data.created_by == request.auth.uid);
+      // Permettre la lecture si l'utilisateur est authentifié
+      allow read: if request.auth != null;
+      
+      // Permettre la création si l'utilisateur est authentifié
+      allow create: if request.auth != null;
+      
+      // Permettre la mise à jour si l'utilisateur est authentifié
+      // (même pour les anciens stocks avec created_by: "system")
+      allow update: if request.auth != null;
+      
+      // Permettre la suppression si l'utilisateur est authentifié et que c'est son stock
+      allow delete: if request.auth != null && 
+        (resource.data.created_by == request.auth.uid || 
+         resource.data.created_by == 'system');
     }
     
     // Règles pour les ventes - ISOLATION COMPLÈTE

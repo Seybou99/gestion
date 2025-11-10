@@ -3,20 +3,20 @@ import * as ImagePicker from 'expo-image-picker';
 import { router } from 'expo-router';
 import { useEffect, useState } from 'react';
 import {
-  ActivityIndicator,
-  Alert,
-  Dimensions,
-  FlatList,
-  KeyboardAvoidingView,
-  Modal,
-  Platform,
-  Image as RNImage,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  View,
+    ActivityIndicator,
+    Alert,
+    Dimensions,
+    FlatList,
+    KeyboardAvoidingView,
+    Modal,
+    Platform,
+    Image as RNImage,
+    ScrollView,
+    StyleSheet,
+    Text,
+    TextInput,
+    TouchableOpacity,
+    View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useDispatch, useSelector } from 'react-redux';
@@ -136,10 +136,16 @@ export default function ArticlesScreen() {
   ];
 
 
-  // Créer la liste des catégories avec "Tous" en premier
+  // Créer la liste des catégories avec "Tous" en premier et déduplication
   const categories = [
     { id: 'all', name: 'Tous' },
-    ...reduxCategories
+    // ✅ DÉDUPLICATION : Garder seulement la première catégorie avec chaque ID unique
+    ...reduxCategories.reduce((unique: any[], category) => {
+      if (!unique.find(c => c.id === category.id)) {
+        unique.push(category);
+      }
+      return unique;
+    }, [])
   ];
 
   // Charger les produits et catégories au démarrage
@@ -156,13 +162,21 @@ export default function ArticlesScreen() {
   }, [showCategoriesModal]);
 
   // Filtrer les produits selon la recherche et la catégorie
-  const filteredProducts = products.filter(product => {
-    const matchesSearch = product.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                         (product.description && product.description.toLowerCase().includes(searchQuery.toLowerCase())) ||
-                         product.sku.toLowerCase().includes(searchQuery.toLowerCase());
-    const matchesCategory = selectedCategory === 'all' || product.category_id === selectedCategory;
-    return matchesSearch && matchesCategory;
-  });
+  const filteredProducts = products
+    .filter(product => {
+      const matchesSearch = product.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                           (product.description && product.description.toLowerCase().includes(searchQuery.toLowerCase())) ||
+                           product.sku.toLowerCase().includes(searchQuery.toLowerCase());
+      const matchesCategory = selectedCategory === 'all' || product.category_id === selectedCategory;
+      return matchesSearch && matchesCategory;
+    })
+    // ✅ DÉDUPLICATION : Garder seulement le premier produit avec chaque ID unique
+    .reduce((unique: any[], product) => {
+      if (!unique.find(p => p.id === product.id)) {
+        unique.push(product);
+      }
+      return unique;
+    }, []);
 
   const getStatusColor = (product: any) => {
     if ((product as any).stock_quantity === undefined) return '#8E8E93';
@@ -213,6 +227,7 @@ export default function ArticlesScreen() {
         )}
         <View style={styles.articleInfo}>
           <Text style={styles.articleName}>{product.name}</Text>
+          {/* <Text style={styles.articleSku}>ID: {product.id}</Text> */}
           <Text style={styles.articleSku}>SKU: {product.sku}</Text>
         </View>
         <View style={styles.articlePrice}>

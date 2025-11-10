@@ -110,7 +110,7 @@ export const syncCategoriesToLocal = async () => {
           }
         }
       } catch (error) {
-        console.error(`❌ [SYNC CATEGORIES] Erreur catégorie "${firebaseCategory.name}":`, error);
+        console.log(`❌ [SYNC CATEGORIES] Erreur catégorie "${firebaseCategory.name}":`, error);
       }
     }
 
@@ -124,7 +124,7 @@ export const syncCategoriesToLocal = async () => {
       totalCategories: firebaseCategories.length,
     };
   } catch (error) {
-    console.error('❌ [SYNC CATEGORIES] Erreur générale:', error);
+    console.log('❌ [SYNC CATEGORIES] Erreur générale:', error);
     throw error;
   }
 };
@@ -156,7 +156,7 @@ export const syncFirebaseToLocal = async () => {
     try {
       categoriesResult = await syncCategoriesToLocal();
     } catch (error) {
-      console.error('❌ [SYNC DOWNLOAD] Erreur sync catégories:', error);
+      console.log('❌ [SYNC DOWNLOAD] Erreur sync catégories:', error);
       // Continuer même si les catégories échouent
     }
 
@@ -167,6 +167,14 @@ export const syncFirebaseToLocal = async () => {
     // 3. Récupérer les stocks depuis Firebase
     const firebaseStocks = await firebaseService.getStock();
     console.log(`📊 [SYNC DOWNLOAD] ${firebaseStocks.length} stocks trouvés dans Firebase`);
+
+    // 3.5 Récupérer les locations depuis Firebase
+    const firebaseLocations = await firebaseService.getLocations();
+    console.log(`🏢 [SYNC DOWNLOAD] ${firebaseLocations.length} locations trouvées dans Firebase`);
+
+    // 3.6 Récupérer l'inventory depuis Firebase
+    const firebaseInventory = await firebaseService.getInventory();
+    console.log(`📦 [SYNC DOWNLOAD] ${firebaseInventory.length} inventaires trouvés dans Firebase`);
 
     // 4. Récupérer les produits existants localement
     const localProducts = await databaseService.getAll('products') as any[];
@@ -190,7 +198,7 @@ export const syncFirebaseToLocal = async () => {
           console.log(`⏭️ [SYNC DOWNLOAD] Produit "${product.name}" existe déjà`);
         }
       } catch (error) {
-        console.error(`❌ [SYNC DOWNLOAD] Erreur produit "${product.name}":`, error);
+        console.log(`❌ [SYNC DOWNLOAD] Erreur produit "${product.name}":`, error);
       }
     }
 
@@ -216,7 +224,51 @@ export const syncFirebaseToLocal = async () => {
           console.log(`⏭️ [SYNC DOWNLOAD] Stock pour produit "${stock.product_id}" existe déjà`);
         }
       } catch (error) {
-        console.error(`❌ [SYNC DOWNLOAD] Erreur stock "${stock.product_id}":`, error);
+        console.log(`❌ [SYNC DOWNLOAD] Erreur stock "${stock.product_id}":`, error);
+      }
+    }
+
+    // 8. Sauvegarder les locations localement
+    let locationsAdded = 0;
+    for (const location of firebaseLocations) {
+      try {
+        const existing = await databaseService.getById('locations', location.id);
+        if (!existing) {
+          await databaseService.insert('locations', {
+            ...location,
+            created_at: location.created_at,
+            updated_at: location.updated_at,
+            sync_status: 'synced',
+          });
+          console.log(`✅ [SYNC DOWNLOAD] Location "${location.name}" téléchargée`);
+          locationsAdded++;
+        } else {
+          console.log(`⏭️ [SYNC DOWNLOAD] Location "${location.name}" existe déjà`);
+        }
+      } catch (error) {
+        console.log(`❌ [SYNC DOWNLOAD] Erreur location "${location.name}":`, error);
+      }
+    }
+
+    // 9. Sauvegarder l'inventory localement
+    let inventoryAdded = 0;
+    for (const inv of firebaseInventory) {
+      try {
+        const existing = await databaseService.getById('inventory', inv.id);
+        if (!existing) {
+          await databaseService.insert('inventory', {
+            ...inv,
+            created_at: inv.created_at,
+            updated_at: inv.updated_at,
+            sync_status: 'synced',
+          });
+          console.log(`✅ [SYNC DOWNLOAD] Inventory pour produit "${inv.product_id}" téléchargé`);
+          inventoryAdded++;
+        } else {
+          console.log(`⏭️ [SYNC DOWNLOAD] Inventory pour produit "${inv.product_id}" existe déjà`);
+        }
+      } catch (error) {
+        console.log(`❌ [SYNC DOWNLOAD] Erreur inventory "${inv.product_id}":`, error);
       }
     }
 
@@ -228,11 +280,15 @@ export const syncFirebaseToLocal = async () => {
       totalCategories: categoriesResult.totalCategories,
       productsDownloaded: productsAdded,
       stocksDownloaded: stocksAdded,
+      locationsDownloaded: locationsAdded,
+      inventoryDownloaded: inventoryAdded,
       totalProducts: firebaseProducts.length,
       totalStocks: firebaseStocks.length,
+      totalLocations: firebaseLocations.length,
+      totalInventory: firebaseInventory.length,
     };
   } catch (error) {
-    console.error('❌ [SYNC DOWNLOAD] Erreur générale:', error);
+    console.log('❌ [SYNC DOWNLOAD] Erreur générale:', error);
     throw error;
   }
 };

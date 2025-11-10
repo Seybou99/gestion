@@ -1,11 +1,12 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
-    createUserWithEmailAndPassword,
-    deleteUser,
-    updateProfile as firebaseUpdateProfile,
-    onAuthStateChanged,
-    signInWithEmailAndPassword,
-    signOut,
-    updatePassword
+  createUserWithEmailAndPassword,
+  deleteUser,
+  updateProfile as firebaseUpdateProfile,
+  onAuthStateChanged,
+  signInWithEmailAndPassword,
+  signOut,
+  updatePassword
 } from 'firebase/auth';
 import { doc, getDoc, setDoc, updateDoc } from 'firebase/firestore';
 import React, { createContext, ReactNode, useContext, useEffect, useState } from 'react';
@@ -60,12 +61,53 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         if (firebaseUser) {
           console.log('✅ [AUTH] Utilisateur Firebase détecté:', firebaseUser.email);
           
-          // Vérifier si c'est un nouvel utilisateur (changement d'utilisateur)
-          if (previousUid && previousUid !== firebaseUser.uid) {
-            console.log('🔄 [AUTH] Changement d\'utilisateur détecté, nettoyage des caches...');
+          // Vérifier si c'est un nouvel utilisateur (changement d'utilisateur) OU premier login
+          const isNewUser = !previousUid || previousUid !== firebaseUser.uid;
+          
+          if (isNewUser) {
+            if (previousUid && previousUid !== firebaseUser.uid) {
+              console.log('🔄 [AUTH] Changement d\'utilisateur détecté, nettoyage complet...');
+              console.log(`🔄 [AUTH] Ancien UID: ${previousUid}, Nouveau UID: ${firebaseUser.uid}`);
+            } else {
+              console.log('🔄 [AUTH] Premier login détecté pour:', firebaseUser.email);
+            }
+            
+            // 1. Invalider tous les caches en mémoire
             const { databaseService } = await import('../services/DatabaseService');
             databaseService.invalidateCache();
+            
+            // 2. NETTOYER COMPLÈTEMENT AsyncStorage pour éviter les données d'ancien utilisateur
+            console.log('🧹 [AUTH] Nettoyage complet d\'AsyncStorage...');
+            await AsyncStorage.multiRemove([
+              'products',
+              'stock',
+              'sales',
+              'customers',
+              'categories',
+              'locations',
+              'inventory',
+              'sale_items',
+              'sync_queue',
+              'sync_metadata'
+            ]);
+            
+            console.log('✅ [AUTH] AsyncStorage nettoyé');
+            
+            // 3. Synchroniser les données depuis Firebase
+            try {
+              const { syncFirebaseToLocal } = await import('../utils/syncFirebaseToLocal');
+              console.log('🔄 [AUTH] Téléchargement des données depuis Firebase...');
+              await syncFirebaseToLocal();
+              console.log('✅ [AUTH] Données synchronisées depuis Firebase');
+              
+              // 4. Invalider le cache après insertion pour forcer le rechargement
+              databaseService.invalidateCache();
+              console.log('🗑️ [AUTH] Cache invalidé après synchronisation');
+            } catch (error) {
+              console.log('⚠️ [AUTH] Erreur sync (sera retentée automatiquement):', error);
+            }
           }
+          
           setPreviousUid(firebaseUser.uid);
           
           // Récupérer les données supplémentaires depuis Firestore
@@ -84,8 +126,27 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
           
           setUser(userInfo);
           console.log('✅ [AUTH] Utilisateur chargé:', userInfo.email, 'UID:', userInfo.uid);
+          
+          // Démarrer la synchronisation temps réel
+          try {
+            const { realtimeSyncService } = await import('../services/RealtimeSyncService');
+            await realtimeSyncService.start();
+            console.log('🔄 [AUTH] Synchronisation temps réel démarrée');
+          } catch (error) {
+            console.log('⚠️ [AUTH] Erreur démarrage sync temps réel:', error);
+          }
         } else {
           console.log('ℹ️ [AUTH] Aucun utilisateur connecté');
+          
+          // Arrêter la synchronisation temps réel
+          try {
+            const { realtimeSyncService } = await import('../services/RealtimeSyncService');
+            realtimeSyncService.stop();
+            console.log('🛑 [AUTH] Synchronisation temps réel arrêtée (aucun utilisateur)');
+          } catch (error) {
+            console.log('⚠️ [AUTH] Erreur arrêt sync temps réel:', error);
+          }
+          
           setPreviousUid(null);
           setUser(null);
         }
@@ -121,7 +182,8 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         message: 'Connexion réussie !' 
       };
     } catch (error: any) {
-      console.error('❌ [AUTH] Erreur connexion:', error.message);
+      // Utiliser console.log au lieu de console.error pour éviter l'affichage rouge
+      console.log('❌ [AUTH] Erreur connexion:', error.code, error.message);
       
       let message = 'Erreur lors de la connexion';
       
@@ -195,7 +257,8 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         message: 'Inscription réussie !' 
       };
     } catch (error: any) {
-      console.error('❌ [AUTH] Erreur inscription:', error.message);
+      // Utiliser console.log au lieu de console.error pour éviter l'affichage rouge
+      console.log('❌ [AUTH] Erreur inscription:', error.code, error.message);
       
       let message = 'Erreur lors de l\'inscription';
       
@@ -226,16 +289,39 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     try {
       console.log('🚪 [AUTH] Déconnexion Firebase');
       
-      // Nettoyer le cache pour éviter que le prochain utilisateur voie les données
-      console.log('🧹 [AUTH] Nettoyage du cache local...');
+      // Arrêter la synchronisation temps réel
+      try {
+        const { realtimeSyncService } = await import('../services/RealtimeSyncService');
+        realtimeSyncService.stop();
+        console.log('🛑 [AUTH] Synchronisation temps réel arrêtée');
+      } catch (error) {
+        console.log('⚠️ [AUTH] Erreur arrêt sync temps réel:', error);
+      }
+      
+      // Nettoyer complètement AsyncStorage pour éviter que le prochain utilisateur voie les données
+      console.log('🧹 [AUTH] Nettoyage complet d\'AsyncStorage...');
+      await AsyncStorage.multiRemove([
+        'products',
+        'stock',
+        'sales',
+        'customers',
+        'categories',
+        'locations',
+        'inventory',
+        'sale_items',
+        'sync_queue',
+        'sync_metadata'
+      ]);
+      
+      // Invalider le cache en mémoire
       const { databaseService } = await import('../services/DatabaseService');
       databaseService.invalidateCache();
       
       await signOut(auth);
       setUser(null);
-      console.log('✅ [AUTH] Déconnexion réussie');
+      console.log('✅ [AUTH] Déconnexion réussie et données nettoyées');
     } catch (error: any) {
-      console.error('❌ [AUTH] Erreur déconnexion:', error.message);
+      console.log('❌ [AUTH] Erreur déconnexion:', error.message);
       // Forcer la déconnexion locale même en cas d'erreur
       setUser(null);
     }

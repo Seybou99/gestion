@@ -1,17 +1,21 @@
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useNavigation } from '@react-navigation/native';
-import { useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
-    Alert,
-    Dimensions,
-    FlatList,
-    Modal,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View
+  Alert,
+  Dimensions,
+  FlatList,
+  Keyboard,
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useSelector } from 'react-redux';
@@ -68,11 +72,26 @@ export default function EntrepotsTab() {
   const loadLocations = async () => {
     try {
       setLoading(true);
+      
+      // Récupérer l'utilisateur actuel
+      const { getCurrentUser } = await import('../utils/userInfo');
+      const user = await getCurrentUser();
+      
+      if (!user) {
+        console.warn('⚠️ Utilisateur non connecté');
+        setLoading(false);
+        return;
+      }
+      
       const allLocations = await databaseService.getAll('locations') as any[];
+      
+      // Filtrer uniquement les emplacements créés par l'utilisateur actuel
+      const userLocations = allLocations.filter(location => location.created_by === user.uid);
+      
       const inventory = await databaseService.getAll('inventory') as any[];
       const products = await databaseService.getAll('products') as any[];
       
-      const locationsWithStats = allLocations.map(location => {
+      const locationsWithStats = userLocations.map(location => {
         const locationInventory = inventory.filter(inv => inv.location_id === location.id);
         const productsCount = locationInventory.length;
         const lowStockCount = locationInventory.filter(inv => inv.quantity_available < inv.quantity_min).length;
@@ -106,17 +125,38 @@ export default function EntrepotsTab() {
       
       setLoading(true);
       
-      const locationData = {
+      // Récupérer les informations de l'utilisateur actuel
+      const { getCurrentUser } = await import('../utils/userInfo');
+      const user = await getCurrentUser();
+      
+      if (!user) {
+        Alert.alert('Erreur', 'Utilisateur non connecté');
+        setLoading(false);
+        return;
+      }
+      
+      // Créer l'objet de données en omettant les champs undefined (Firebase ne supporte pas undefined)
+      const locationData: any = {
         name: newLocation.name.trim(),
         address: newLocation.address.trim(),
         location_type: newLocation.location_type,
-        contact_person: newLocation.contact_person.trim() || undefined,
-        phone: newLocation.phone.trim() || undefined,
         is_active: true,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
         sync_status: 'pending' as const,
+        created_by: user.uid,
+        created_by_name: user.email || user.displayName || 'Utilisateur',
       };
+      
+      // Ajouter uniquement les champs non vides
+      if (newLocation.contact_person.trim()) {
+        locationData.contact_person = newLocation.contact_person.trim();
+      }
+      if (newLocation.phone.trim()) {
+        locationData.phone = newLocation.phone.trim();
+      }
+      
+      let newLocationId: string;
       
       if (isConnected) {
         try {
@@ -134,19 +174,53 @@ export default function EntrepotsTab() {
           items.push(locationWithFirebaseId);
           await AsyncStorage.setItem('locations', JSON.stringify(items));
           databaseService.invalidateCache('locations');
+          
+          newLocationId = firebaseId;
         } catch (error) {
+          console.error('❌ Erreur création Firebase:', error);
           const localId = await databaseService.insert('locations', locationData);
           await syncService.addToSyncQueue('locations', localId, 'create', locationData);
+          databaseService.invalidateCache('locations');
+          
+          newLocationId = localId;
         }
       } else {
         const localId = await databaseService.insert('locations', locationData);
         await syncService.addToSyncQueue('locations', localId, 'create', locationData);
+        databaseService.invalidateCache('locations');
+        
+        newLocationId = localId;
       }
       
+      // Attendre que la synchronisation soit terminée
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      
+      // Recharger les emplacements
       await loadLocations();
+      
+      // Nettoyer le formulaire
       setNewLocation({ name: '', address: '', location_type: 'warehouse', contact_person: '', phone: '' });
+      Keyboard.dismiss();
       setShowCreateModal(false);
-      Alert.alert('Succès', 'Emplacement créé ! 🏢');
+      
+      // Trouver l'ID final de l'emplacement (peut avoir changé après synchronisation)
+      const updatedLocations = await databaseService.getAll('locations') as any[];
+      const finalLocation = updatedLocations.find(loc => 
+        loc.id === newLocationId || loc.name === locationData.name
+      );
+      
+      const finalLocationId = finalLocation?.id || newLocationId;
+      
+      Alert.alert('Succès', 'Emplacement créé ! 🏢', [
+        {
+          text: 'Voir les détails',
+          onPress: () => {
+            setSelectedLocationId(finalLocationId);
+            setShowDetailsModal(true);
+          }
+        },
+        { text: 'OK' }
+      ]);
     } catch (error) {
       console.error('Erreur création:', error);
       Alert.alert('Erreur', 'Impossible de créer l\'emplacement');
@@ -210,27 +284,109 @@ export default function EntrepotsTab() {
             try {
               setLoading(true);
 
+              // Récupérer la location complète depuis la BDD pour avoir firebase_id
+              const locationData = await databaseService.getById('locations', location.id) as any;
+              
+              if (!locationData) {
+                Alert.alert('Erreur', 'Emplacement introuvable dans la base de données');
+                return;
+              }
+
+              // Déterminer l'ID Firebase à utiliser pour la suppression
+              let firebaseIdToDelete = locationData?.firebase_id;
+              
+              // Si pas de firebase_id mais sync_status est 'synced', 
+              // chercher dans Firebase par nom pour trouver le vrai ID
+              if (!firebaseIdToDelete && locationData?.sync_status === 'synced' && isConnected) {
+                try {
+                  const firebaseLocations = await firebaseService.getLocations();
+                  const matchingLocation = firebaseLocations.find(
+                    (loc: any) => loc.name === locationData.name && 
+                                 loc.address === locationData.address &&
+                                 loc.created_by === locationData.created_by
+                  );
+                  
+                  if (matchingLocation) {
+                    firebaseIdToDelete = matchingLocation.id;
+                  } else {
+                    // Essayer avec l'ID local comme dernier recours
+                    firebaseIdToDelete = locationData.id;
+                  }
+                } catch (error) {
+                  // En cas d'erreur, essayer avec l'ID local
+                  firebaseIdToDelete = locationData.id;
+                }
+              } else if (!firebaseIdToDelete && locationData?.sync_status === 'synced') {
+                // Mode offline ou pas de connexion : utiliser l'ID local
+                firebaseIdToDelete = locationData.id;
+              }
+
               if (isConnected) {
                 try {
-                  // Supprimer de Firebase d'abord
-                  if (location.firebase_id) {
-                    await firebaseService.deleteLocation(location.firebase_id);
-                  }
+                  let firebaseDeleted = false;
                   
-                  // Supprimer localement
-                  await databaseService.delete('locations', location.id);
-                  databaseService.invalidateCache('locations');
-                } catch (error) {
-                  // Si Firebase échoue, supprimer localement et ajouter à la queue
-                  await databaseService.delete('locations', location.id);
-                  databaseService.invalidateCache('locations');
-                  await syncService.addToSyncQueue('locations', location.id, 'delete', { firebase_id: location.firebase_id });
+                  // Liste des IDs à essayer pour la suppression Firebase (dans l'ordre)
+                  const idsToTry = [
+                    firebaseIdToDelete,  // ID trouvé (firebase_id ou recherché)
+                    locationData?.id,    // ID local (au cas où ils sont identiques)
+                  ].filter(Boolean); // Retirer les valeurs null/undefined
+                  
+                  // Essayer de supprimer avec chaque ID jusqu'à ce qu'un fonctionne
+                  for (const idToTry of idsToTry) {
+                    if (firebaseDeleted) break; // Déjà supprimé, arrêter
+                    
+                    try {
+                      await firebaseService.deleteLocation(idToTry);
+                      firebaseDeleted = true;
+                      break; // Succès, arrêter
+                    } catch (firebaseError: any) {
+                      // Si l'erreur est que le document n'existe pas, c'est OK (déjà supprimé)
+                      if (firebaseError?.message?.includes('not found') || 
+                          firebaseError?.code === 'not-found' ||
+                          firebaseError?.message?.includes('No document')) {
+                        firebaseDeleted = true; // Considérer comme supprimé (peut-être avec un autre ID)
+                        break;
+                      }
+                      // Continuer avec le prochain ID
+                    }
+                  }
+                } catch (error: any) {
+                  // Erreur silencieuse, on continue avec la suppression locale
                 }
-              } else {
-                // Mode offline : supprimer localement et ajouter à la queue
+              }
+              
+              // Supprimer de la BDD locale (AsyncStorage) dans tous les cas (même si Firebase a échoué)
+              try {
                 await databaseService.delete('locations', location.id);
+                
+                // Invalider le cache explicitement
                 databaseService.invalidateCache('locations');
-                await syncService.addToSyncQueue('locations', location.id, 'delete', { firebase_id: location.firebase_id });
+                
+                // Si Firebase n'a pas été supprimé mais qu'on a un ID, ajouter à la queue
+                if (isConnected && firebaseIdToDelete) {
+                  // Vérifier si Firebase a été supprimé en essayant de le récupérer
+                  try {
+                    const firebaseLocation = await firebaseService.getLocationById(firebaseIdToDelete);
+                    if (firebaseLocation) {
+                      await syncService.addToSyncQueue('locations', location.id, 'delete', { 
+                        firebase_id: firebaseIdToDelete 
+                      });
+                    }
+                  } catch (checkError) {
+                    // Si erreur lors de la vérification, ajouter à la queue par précaution
+                    await syncService.addToSyncQueue('locations', location.id, 'delete', { 
+                      firebase_id: firebaseIdToDelete 
+                    });
+                  }
+                } else if (!isConnected && firebaseIdToDelete) {
+                  // Mode offline : ajouter à la queue
+                  await syncService.addToSyncQueue('locations', location.id, 'delete', { 
+                    firebase_id: firebaseIdToDelete 
+                  });
+                }
+              } catch (localError: any) {
+                console.error('Erreur lors de la suppression locale:', localError);
+                throw localError; // Relancer l'erreur pour qu'elle soit gérée par le catch principal
               }
 
               await loadLocations();
@@ -325,16 +481,43 @@ export default function EntrepotsTab() {
       </TouchableOpacity>
 
       {/* Modale Création */}
-      <Modal visible={showCreateModal} animationType="slide" transparent={true}>
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>🏢 Nouvel Emplacement</Text>
-              <TouchableOpacity onPress={() => setShowCreateModal(false)}>
-                <Ionicons name="close" size={28} color="#000" />
-              </TouchableOpacity>
-            </View>
-            <View style={styles.modalBody}>
+      <Modal 
+        visible={showCreateModal} 
+        animationType="slide" 
+        presentationStyle="pageSheet"
+      >
+        <KeyboardAvoidingView 
+          style={styles.modalContainer}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 20}
+        >
+          <View style={styles.modalHeader}>
+            <TouchableOpacity
+              onPress={() => {
+                Keyboard.dismiss();
+                setShowCreateModal(false);
+              }}
+              style={styles.modalCloseButton}
+            >
+              <Text style={styles.modalCloseText}>Annuler</Text>
+            </TouchableOpacity>
+            <Text style={styles.modalTitle}>Nouvel Emplacements</Text>
+            <TouchableOpacity
+              onPress={handleCreateLocation}
+              style={styles.modalSaveButton}
+              disabled={loading}
+            >
+              <Text style={styles.modalSaveText}>
+                {loading ? 'Création...' : 'Créer'}
+              </Text>
+            </TouchableOpacity>
+          </View>
+          <ScrollView 
+            style={styles.modalContent}
+            contentContainerStyle={styles.modalScrollContent}
+            showsVerticalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
+          >
               <View style={styles.inputGroup}>
                 <Text style={styles.inputLabel}>Nom *</Text>
                 <TextInput
@@ -342,6 +525,7 @@ export default function EntrepotsTab() {
                   placeholder="Ex: Entrepôt Central"
                   value={newLocation.name}
                   onChangeText={(text) => setNewLocation({ ...newLocation, name: text })}
+                  placeholderTextColor="#999"
                 />
               </View>
               <View style={styles.inputGroup}>
@@ -351,7 +535,9 @@ export default function EntrepotsTab() {
                   placeholder="Ex: 123 Rue..., Bamako"
                   value={newLocation.address}
                   onChangeText={(text) => setNewLocation({ ...newLocation, address: text })}
+                  placeholderTextColor="#999"
                   multiline
+                  numberOfLines={3}
                 />
               </View>
               <View style={styles.inputGroup}>
@@ -370,17 +556,33 @@ export default function EntrepotsTab() {
                   ))}
                 </View>
               </View>
-            </View>
-            <View style={styles.modalFooter}>
-              <TouchableOpacity style={[styles.modalButton, styles.modalButtonCancel]} onPress={() => setShowCreateModal(false)}>
-                <Text style={styles.modalButtonTextCancel}>Annuler</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={[styles.modalButton, styles.modalButtonConfirm]} onPress={handleCreateLocation} disabled={loading}>
-                <Text style={styles.modalButtonText}>{loading ? 'Création...' : 'Créer'}</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
+              
+              {/* Contact (Optionnel) */}
+              <View style={styles.inputGroup}>
+                <Text style={styles.inputLabel}>Personne de contact (optionnel)</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="Ex: Jean Dupont"
+                  value={newLocation.contact_person}
+                  onChangeText={(text) => setNewLocation({ ...newLocation, contact_person: text })}
+                  placeholderTextColor="#999"
+                />
+              </View>
+
+              {/* Téléphone (Optionnel) */}
+              <View style={styles.inputGroup}>
+                <Text style={styles.inputLabel}>Téléphone (optionnel)</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="Ex: +223 XX XX XX XX"
+                  value={newLocation.phone}
+                  onChangeText={(text) => setNewLocation({ ...newLocation, phone: text })}
+                  placeholderTextColor="#999"
+                  keyboardType="phone-pad"
+                />
+              </View>
+          </ScrollView>
+        </KeyboardAvoidingView>
       </Modal>
 
       {/* Modal Détails Entrepôt */}
@@ -456,18 +658,52 @@ const styles = StyleSheet.create({
     shadowRadius: 8,
     elevation: 8,
   },
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0, 0, 0, 0.5)', justifyContent: 'flex-end' },
-  modalContent: { backgroundColor: '#fff', borderTopLeftRadius: 20, borderTopRightRadius: 20, maxHeight: '80%' },
+  modalContainer: {
+    flex: 1,
+    backgroundColor: '#f8f9fa',
+  },
   modalHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    padding: dynamicSizes.spacing.lg,
+    paddingHorizontal: 20,
+    paddingVertical: 16,
+    paddingTop: 60,
+    backgroundColor: '#fff',
     borderBottomWidth: 1,
     borderBottomColor: '#e0e0e0',
   },
-  modalTitle: { fontSize: isTablet ? 24 : 20, fontWeight: 'bold', color: '#1a1a1a' },
-  modalBody: { padding: dynamicSizes.spacing.lg },
+  modalCloseButton: {
+    paddingVertical: 8,
+  },
+  modalCloseText: {
+    fontSize: 16,
+    color: '#666',
+  },
+  modalTitle: { 
+    fontSize: isTablet ? 24 : 20, 
+    fontWeight: '600', 
+    color: '#1a1a1a' 
+  },
+  modalSaveButton: {
+    backgroundColor: '#007AFF',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 8,
+  },
+  modalSaveText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#fff',
+  },
+  modalContent: {
+    flex: 1,
+    padding: 20,
+  },
+  modalScrollContent: {
+    flexGrow: 1,
+    paddingBottom: 100, // Espace supplémentaire pour le clavier
+  },
   inputGroup: { marginBottom: dynamicSizes.spacing.lg },
   inputLabel: { fontSize: dynamicSizes.fontSize.medium, fontWeight: '600', color: '#1a1a1a', marginBottom: dynamicSizes.spacing.sm },
   input: {
@@ -491,18 +727,6 @@ const styles = StyleSheet.create({
   typeButtonActive: { backgroundColor: '#007AFF', borderColor: '#007AFF' },
   typeButtonText: { fontSize: dynamicSizes.fontSize.small, fontWeight: '600', color: '#1a1a1a' },
   typeButtonTextActive: { color: '#fff' },
-  modalFooter: {
-    flexDirection: 'row',
-    padding: dynamicSizes.spacing.lg,
-    gap: dynamicSizes.spacing.md,
-    borderTopWidth: 1,
-    borderTopColor: '#e0e0e0',
-  },
-  modalButton: { flex: 1, paddingVertical: dynamicSizes.spacing.md, borderRadius: 12, alignItems: 'center' },
-  modalButtonCancel: { backgroundColor: '#f0f0f0' },
-  modalButtonConfirm: { backgroundColor: '#007AFF' },
-  modalButtonText: { color: '#fff', fontSize: dynamicSizes.fontSize.medium, fontWeight: '600' },
-  modalButtonTextCancel: { color: '#1a1a1a', fontSize: dynamicSizes.fontSize.medium, fontWeight: '600' },
   deleteButton: {
     padding: dynamicSizes.spacing.md,
     marginRight: dynamicSizes.spacing.sm,

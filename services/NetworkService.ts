@@ -71,7 +71,17 @@ class NetworkService {
 
   // Vérifier si l'appareil est connecté à Internet (version simplifiée)
   async isConnected(): Promise<boolean> {
-    return true; // Toujours connecté en mode Expo Go
+    try {
+      // Essayer une requête simple pour vérifier la connectivité
+      const response = await fetch('https://www.google.com', { 
+        method: 'HEAD',
+        timeout: 3000 
+      });
+      return response.ok;
+    } catch (error) {
+      console.warn('🌐 Pas de connexion Internet détectée');
+      return false;
+    }
   }
 
   // Vérifier si l'Internet est accessible (version simplifiée)

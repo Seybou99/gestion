@@ -1,3 +1,4 @@
+import { router } from 'expo-router';
 import React from 'react';
 import {
     Alert,
@@ -8,6 +9,7 @@ import {
     TouchableOpacity,
     View,
 } from 'react-native';
+import { CleanFirestoreStockButton } from '../../components/CleanFirestoreStockButton';
 import { CompleteSyncButton } from '../../components/CompleteSyncButton';
 import { NetworkTestButton } from '../../components/NetworkTestButton';
 import { useAuth } from '../../contexts/AuthContext';
@@ -21,7 +23,6 @@ import { useAuth } from '../../contexts/AuthContext';
 export default function ParametresScreen() {
   const { user, logout } = useAuth();
   const [notificationsEnabled, setNotificationsEnabled] = React.useState(true);
-  const [darkModeEnabled, setDarkModeEnabled] = React.useState(false);
   const [autoSyncEnabled, setAutoSyncEnabled] = React.useState(true);
   const [soundEnabled, setSoundEnabled] = React.useState(true);
   const [vibrationEnabled, setVibrationEnabled] = React.useState(true);
@@ -48,6 +49,65 @@ export default function ParametresScreen() {
     );
   };
 
+  const handleResetData = () => {
+    Alert.alert(
+      'Réinitialiser les données',
+      'Cela va supprimer toutes les données locales et les recharger depuis le serveur. Cette action est utile si vous rencontrez des problèmes de synchronisation. Continuer ?',
+      [
+        { text: 'Annuler', style: 'cancel' },
+        {
+          text: 'Réinitialiser',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              console.log('🔄 [RESET] Début de la réinitialisation des données...');
+              
+              // Importer AsyncStorage
+              const AsyncStorage = (await import('@react-native-async-storage/async-storage')).default;
+              
+              // Nettoyer AsyncStorage
+              await AsyncStorage.multiRemove([
+                'products',
+                'stock',
+                'sales',
+                'customers',
+                'categories',
+                'locations',
+                'inventory',
+                'sale_items',
+                'sync_queue',
+                'sync_metadata'
+              ]);
+              
+              // Invalider le cache
+              const { databaseService } = await import('../../services/DatabaseService');
+              databaseService.invalidateCache();
+              
+              console.log('✅ [RESET] Données locales supprimées');
+              
+              Alert.alert(
+                'Succès',
+                'Données réinitialisées avec succès. Les données vont se recharger depuis le serveur.',
+                [
+                  {
+                    text: 'OK',
+                    onPress: () => {
+                      // Forcer le rechargement en naviguant vers l'accueil
+                      router.replace('/accueil');
+                    }
+                  }
+                ]
+              );
+            } catch (error) {
+              console.error('❌ [RESET] Erreur:', error);
+              Alert.alert('Erreur', 'Impossible de réinitialiser les données');
+            }
+          }
+        }
+      ]
+    );
+  };
+
   const handleResetSettings = () => {
     Alert.alert(
       'Réinitialiser les paramètres',
@@ -59,7 +119,6 @@ export default function ParametresScreen() {
           style: 'destructive', 
           onPress: () => {
             setNotificationsEnabled(true);
-            setDarkModeEnabled(false);
             setAutoSyncEnabled(true);
             setSoundEnabled(true);
             setVibrationEnabled(true);
@@ -126,146 +185,67 @@ export default function ParametresScreen() {
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-      {/* Header */}
-      <View style={styles.header}>
-        <Text style={styles.title}>Paramètres</Text>
-        <Text style={styles.subtitle}>Configurez votre application</Text>
-      </View>
-
-      {/* Profil utilisateur */}
-      <View style={styles.profileSection}>
-        <View style={styles.profileAvatar}>
-          <Text style={styles.avatarText}>⚙️</Text>
-        </View>
-        <View style={styles.profileInfo}>
-          <Text style={styles.profileName}>
-            {user?.firstName && user?.lastName 
-              ? `${user.firstName} ${user.lastName}` 
-              : 'Utilisateur'
-            }
-          </Text>
-          <Text style={styles.profileEmail}>{user?.email || 'user@example.com'}</Text>
-        </View>
-      </View>
-
       {/* Paramètres généraux */}
-      {renderSettingsSection('Général', (
+      
+
+      {/* Ventes et Rapports */}
+      {renderSettingsSection('Ventes et Rapports', (
         <>
-          {renderSwitchItem(
-            '🔔',
-            'Notifications',
-            'Recevoir les notifications push',
-            notificationsEnabled,
-            setNotificationsEnabled
+          {renderSettingItem(
+            '🧾',
+            'Historique des ventes',
+            'Voir toutes les ventes effectuées',
+            () => {
+              console.log('🧾 Navigation vers historique des ventes');
+              router.push('/parametres/recu');
+            }
           )}
-          {renderSwitchItem(
-            '🌙',
-            'Mode sombre',
-            'Activer le thème sombre',
-            darkModeEnabled,
-            setDarkModeEnabled
+          {renderSettingItem(
+            '↩️',
+            'Remboursements',
+            'Voir tous les remboursements effectués',
+            () => {
+              console.log('↩️ Navigation vers remboursements');
+              router.push('/parametres/remboursement');
+            }
           )}
-          {renderSwitchItem(
-            '🔊',
-            'Sons',
-            'Activer les sons de l\'application',
-            soundEnabled,
-            setSoundEnabled
-          )}
-          {renderSwitchItem(
-            '📳',
-            'Vibrations',
-            'Activer les vibrations',
-            vibrationEnabled,
-            setVibrationEnabled
+          {renderSettingItem(
+            '📄',
+            'Devis',
+            'Gérer tous vos devis',
+            () => {
+              console.log('📄 Navigation vers devis');
+              router.push('/parametres/devis');
+            }
           )}
         </>
       ))}
 
-      {/* Synchronisation */}
-      {renderSettingsSection('Synchronisation', (
-        <View style={styles.syncSection}>
-          {renderSwitchItem(
-            '🔄',
-            'Synchronisation automatique',
-            'Synchroniser les données en arrière-plan',
-            autoSyncEnabled,
-            setAutoSyncEnabled
-          )}
-          {renderSettingItem(
-            '📡',
-            'Fréquence de synchronisation',
-            'Choisir la fréquence de sync',
-            () => Alert.alert('Fréquence', 'Options de fréquence à implémenter')
-          )}
-          {renderSettingItem(
-            '📊',
-            'Données hors ligne',
-            'Gérer le cache local',
-            () => Alert.alert('Cache', 'Gestion du cache à implémenter')
-          )}
-          
-          {/* Boutons de synchronisation */}
-          <View style={styles.syncButtonsContainer}>
-            <NetworkTestButton style={styles.syncButton} />
-            <CompleteSyncButton style={styles.syncButton} />
-          </View>
-        </View>
-      ))}
-
-      {/* Interface */}
-      {renderSettingsSection('Interface', (
+      {/* Gestion */}
+      {renderSettingsSection('Gestion', (
         <>
           {renderSettingItem(
-            '🎨',
-            'Thème de l\'application',
-            'Personnaliser l\'apparence',
-            () => Alert.alert('Thème', 'Sélecteur de thème à implémenter')
+            '👤',
+            'Profil',
+            'Informations de votre compte',
+            () => {
+              console.log('👤 Navigation vers profil');
+              router.push('/parametres/profil');
+            }
           )}
           {renderSettingItem(
-            '📱',
-            'Taille du texte',
-            'Ajuster la taille des polices',
-            () => Alert.alert('Texte', 'Réglage de la taille à implémenter')
-          )}
-          {renderSettingItem(
-            '🌍',
-            'Langue',
-            'Choisir la langue de l\'application',
-            () => Alert.alert('Langue', 'Sélecteur de langue à implémenter')
+            '👥',
+            'Clients',
+            'Gérer tous vos clients',
+            () => {
+              console.log('👥 Navigation vers clients');
+              router.push('/parametres/client');
+            }
           )}
         </>
       ))}
-
-      {/* Sécurité */}
-      {renderSettingsSection('Sécurité', (
-        <>
-          {renderSettingItem(
-            '🔐',
-            'Changer le mot de passe',
-            'Modifier votre mot de passe',
-            () => Alert.alert('Mot de passe', 'Changement de mot de passe à implémenter')
-          )}
-          {renderSettingItem(
-            '🔑',
-            'Authentification à deux facteurs',
-            'Activer la 2FA',
-            () => Alert.alert('2FA', 'Configuration 2FA à implémenter')
-          )}
-          {renderSettingItem(
-            '📱',
-            'Appareils connectés',
-            'Gérer les appareils autorisés',
-            () => Alert.alert('Appareils', 'Gestion des appareils à implémenter')
-          )}
-        </>
-      ))}
-
       {/* Actions importantes */}
       <View style={styles.actionsSection}>
-        <TouchableOpacity style={styles.resetButton} onPress={handleResetSettings}>
-          <Text style={styles.resetButtonText}>Réinitialiser les paramètres</Text>
-        </TouchableOpacity>
         
         <TouchableOpacity style={styles.logoutButton} onPress={handleLogout}>
           <Text style={styles.logoutButtonText}>Se déconnecter</Text>
@@ -290,67 +270,7 @@ const styles = StyleSheet.create({
   scrollContent: {
     flexGrow: 1,
     paddingBottom: 20,
-  },
-  header: {
-    backgroundColor: '#fff',
-    padding: 20,
-    paddingTop: 40,
-    borderBottomLeftRadius: 20,
-    borderBottomRightRadius: 20,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 8,
-    elevation: 4,
-  },
-  title: {
-    fontSize: 28,
-    fontWeight: 'bold',
-    color: '#1a1a1a',
-    marginBottom: 4,
-  },
-  subtitle: {
-    fontSize: 16,
-    color: '#666',
-  },
-  profileSection: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#fff',
-    marginHorizontal: 20,
-    marginTop: 20,
-    borderRadius: 12,
-    padding: 20,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 2,
-  },
-  profileAvatar: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
-    backgroundColor: '#007AFF',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: 16,
-  },
-  avatarText: {
-    fontSize: 24,
-  },
-  profileInfo: {
-    flex: 1,
-  },
-  profileName: {
-    fontSize: 18,
-    fontWeight: '600',
-    color: '#1a1a1a',
-    marginBottom: 4,
-  },
-  profileEmail: {
-    fontSize: 14,
-    color: '#666',
+    paddingTop: 10,
   },
   section: {
     marginTop: 20,

@@ -1,27 +1,33 @@
 import { Ionicons } from '@expo/vector-icons';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-    Alert,
-    Dimensions,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View
+  Alert,
+  Dimensions,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View
 } from 'react-native';
 
 // Import conditionnel pour éviter l'erreur en mode Expo Go
-let Camera: any = null;
 let CameraView: any = null;
 let useCameraPermissions: any = null;
+let isCameraAvailable = false;
 
 try {
   const cameraModule = require('expo-camera');
-  Camera = cameraModule.Camera;
-  CameraView = cameraModule.CameraView;
-  useCameraPermissions = cameraModule.useCameraPermissions;
+  if (cameraModule.CameraView) {
+    CameraView = cameraModule.CameraView;
+  }
+  if (cameraModule.useCameraPermissions) {
+    useCameraPermissions = cameraModule.useCameraPermissions;
+  }
+  isCameraAvailable = true;
+  console.log('✅ Module expo-camera chargé avec succès');
 } catch (error) {
-  console.log('📱 Modules natifs non disponibles en mode Expo Go');
+  console.log('📱 Modules natifs non disponibles:', error);
+  isCameraAvailable = false;
 }
 
 const { width, height } = Dimensions.get('window');
@@ -33,16 +39,44 @@ interface QRScannerProps {
   subtitle?: string;
 }
 
-export const QRScanner: React.FC<QRScannerProps> = ({
+// Hook personnalisé pour gérer les permissions de manière sécurisée
+const useSafeCameraPermissions = () => {
+  // Utiliser le hook réel si disponible, sinon état local
+  const [realPermission, realRequestPermission] = useCameraPermissions 
+    ? useCameraPermissions() 
+    : [null, null];
+  
+  const [localPermission, setLocalPermission] = useState<any>(null);
+  
+  // Synchroniser avec le hook réel
+  useEffect(() => {
+    if (realPermission !== undefined) {
+      setLocalPermission(realPermission);
+    }
+  }, [realPermission]);
+  
+  const requestPermission = useCallback(async () => {
+    if (realRequestPermission) {
+      const result = await realRequestPermission();
+      setLocalPermission(result);
+      return result;
+    }
+    return null;
+  }, [realRequestPermission]);
+  
+  return [localPermission || realPermission, requestPermission];
+};
+
+// Composant interne qui utilise le hook
+const QRScannerContent: React.FC<QRScannerProps & { isCameraAvailable: boolean }> = ({
   onScan,
   onClose,
-  title = "Scanner QR Code",
-  subtitle = "Pointez la caméra vers un code QR"
+  title,
+  subtitle,
+  isCameraAvailable
 }) => {
-  const [hasPermission, setHasPermission] = useState<boolean | null>(null);
   const [scanned, setScanned] = useState(false);
   const [flashOn, setFlashOn] = useState(false);
-  const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [manualInput, setManualInput] = useState('');
   const [showManualInput, setShowManualInput] = useState(false);
@@ -50,56 +84,47 @@ export const QRScanner: React.FC<QRScannerProps> = ({
   // Ref pour éviter les scans multiples rapides
   const scanTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Gestion robuste des permissions caméra
-  const requestCameraPermission = useCallback(async () => {
-    try {
-      setIsLoading(true);
-      setError(null);
-      
-      // Vérifier si les modules natifs sont disponibles
-      if (!Camera || !CameraView) {
-        console.log('📱 Mode Expo Go - Scanner simulé');
-        setHasPermission(true); // Simuler la permission pour le mode test
-        setIsLoading(false);
-        return;
-      }
-      
-      console.log('📷 Demande de permission caméra...');
-      const { status } = await Camera.requestCameraPermissionsAsync();
-      
-      console.log('📷 Statut permission caméra:', status);
-      
-      if (status === 'granted') {
-        setHasPermission(true);
-        console.log('✅ Permission caméra accordée');
-      } else if (status === 'denied') {
-        setHasPermission(false);
-        setError('Permission caméra refusée. Veuillez l\'activer dans les paramètres.');
-        console.log('❌ Permission caméra refusée');
-      } else {
-        setHasPermission(false);
-        setError('Permission caméra indéterminée. Veuillez réessayer.');
-        console.log('⚠️ Permission caméra indéterminée');
-      }
-    } catch (error) {
-      console.error('❌ Erreur lors de la demande de permission:', error);
-      setHasPermission(false);
-      setError('Erreur lors de l\'accès à la caméra. Veuillez réessayer.');
-    } finally {
-      setIsLoading(false);
-    }
-  }, []);
+  // Utiliser le hook sécurisé
+  const [permission, requestPermission] = useSafeCameraPermissions();
+  
+  const hasPermission = isCameraAvailable && permission ? (permission.granted || false) : false;
+  const isLoading = isCameraAvailable ? (permission === null) : false;
 
+  // Demander la permission si nécessaire
   useEffect(() => {
-    requestCameraPermission();
+    if (!isCameraAvailable) {
+      console.log('📱 Mode Expo Go - Scanner simulé (expo-camera non installé)');
+      return;
+    }
     
-    // Cleanup au démontage
+    if (!requestPermission) {
+      console.warn('⚠️ requestPermission non disponible');
+      return;
+    }
+    
+    if (permission === null && requestPermission) {
+      console.log('📷 Demande de permission caméra...');
+      requestPermission().catch((err: any) => {
+        console.error('❌ Erreur demande permission:', err);
+        setError('Erreur lors de la demande de permission caméra');
+      });
+    } else if (permission?.granted) {
+      console.log('✅ Permission caméra accordée');
+      setError(null);
+    } else if (permission && !permission.granted) {
+      console.log('❌ Permission caméra refusée:', permission.status);
+      setError('Permission caméra refusée. Veuillez l\'activer dans les paramètres.');
+    }
+  }, [permission, requestPermission, isCameraAvailable]);
+  
+  // Cleanup au démontage
+  useEffect(() => {
     return () => {
       if (scanTimeoutRef.current) {
         clearTimeout(scanTimeoutRef.current);
       }
     };
-  }, [requestCameraPermission]);
+  }, []);
 
   // Gestion optimisée du scan avec debounce
   const handleBarCodeScanned = useCallback(({ type, data }: { type: string; data: string }) => {
@@ -163,8 +188,10 @@ export const QRScanner: React.FC<QRScannerProps> = ({
   // Retry permissions
   const retryPermissions = useCallback(() => {
     setError(null);
-    requestCameraPermission();
-  }, [requestCameraPermission]);
+    if (requestPermission) {
+      requestPermission();
+    }
+  }, [requestPermission]);
 
   // Saisie manuelle pour mode Expo Go
   const handleManualScan = useCallback(() => {
@@ -239,7 +266,7 @@ export const QRScanner: React.FC<QRScannerProps> = ({
 
       {/* Scanner QR Code */}
       <View style={styles.scannerContainer}>
-        {CameraView ? (
+        {CameraView && hasPermission && isCameraAvailable ? (
           // Vrai scanner avec caméra (mode natif)
           <CameraView
             onBarcodeScanned={scanned ? undefined : handleBarCodeScanned}
@@ -341,6 +368,11 @@ export const QRScanner: React.FC<QRScannerProps> = ({
       </View>
     </View>
   );
+};
+
+// Composant principal avec vérification de disponibilité
+export const QRScanner: React.FC<QRScannerProps> = (props) => {
+  return <QRScannerContent {...props} isCameraAvailable={isCameraAvailable} />;
 };
 
 const styles = StyleSheet.create({

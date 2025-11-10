@@ -101,6 +101,11 @@ export default function StockScreen() {
   const [warehouseData, setWarehouseData] = useState<any[]>([]);
   const [selectedProducts, setSelectedProducts] = useState<{[key: string]: {selected: boolean, quantity: number}}>({});
   
+  // États pour le modal de réapprovisionnement individuel
+  const [showProductDetailModal, setShowProductDetailModal] = useState(false);
+  const [selectedProduct, setSelectedProduct] = useState<StockItem | null>(null);
+  const [restockQuantity, setRestockQuantity] = useState('0');
+  
   // États pour les entrepôts
   const [locations, setLocations] = useState<any[]>([]);
   const [showCreateLocationModal, setShowCreateLocationModal] = useState(false);
@@ -123,30 +128,56 @@ export default function StockScreen() {
   // Charger les emplacements
   const loadLocations = async () => {
     try {
+      console.log('🏢 [LOAD LOCATIONS STOCK] Début chargement emplacements pour l\'onglet Entrepôts');
+      
       const allLocations = await (async () => {
         const user = await getCurrentUser();
         if (!user) {
-          console.warn('⚠️ Utilisateur non connecté pour locations');
+          console.warn('⚠️ [LOAD LOCATIONS STOCK] Utilisateur non connecté pour locations');
           return [];
         }
-        return await databaseService.getAllByUser('locations', user.uid);
+        const locations = await databaseService.getAllByUser('locations', user.uid);
+        console.log(`🏢 [LOAD LOCATIONS STOCK] ${locations.length} locations chargées pour l'utilisateur ${user.uid}`);
+        if (locations.length === 0) {
+          // Charger toutes les locations pour debug
+          const allLocs = await databaseService.getAll('locations');
+          console.log(`🏢 [DEBUG STOCK] Total locations dans la BDD: ${allLocs.length}`);
+          allLocs.forEach((loc: any) => {
+            console.log(`🏢 [DEBUG STOCK] Location: ${loc.name}, created_by: ${loc.created_by}`);
+          });
+        }
+        return locations;
       })() as any[];
+      
       const inventory = await (async () => {
         const user = await getCurrentUser();
         if (!user) {
-          console.warn('⚠️ Utilisateur non connecté pour inventory');
+          console.warn('⚠️ [LOAD LOCATIONS STOCK] Utilisateur non connecté pour inventory');
           return [];
         }
-        return await databaseService.getAllByUser('inventory', user.uid);
+        const inv = await databaseService.getAllByUser('inventory', user.uid);
+        console.log(`📦 [LOAD LOCATIONS STOCK] ${inv.length} inventaires chargés pour l'utilisateur ${user.uid}`);
+        if (inv.length === 0) {
+          // Charger tous les inventaires pour debug
+          const allInv = await databaseService.getAll('inventory');
+          console.log(`📦 [DEBUG STOCK] Total inventaires dans la BDD: ${allInv.length}`);
+          allInv.forEach((invItem: any) => {
+            console.log(`📦 [DEBUG STOCK] Inventory: product_id=${invItem.product_id}, location_id=${invItem.location_id}, created_by=${invItem.created_by}`);
+          });
+        }
+        return inv;
       })() as any[];
+      
       const allProducts = await (async () => {
         const user = await getCurrentUser();
         if (!user) {
-          console.warn('⚠️ Utilisateur non connecté pour products');
+          console.warn('⚠️ [LOAD LOCATIONS STOCK] Utilisateur non connecté pour products');
           return [];
         }
         return await databaseService.getAllByUser('products', user.uid);
       })() as any[];
+      
+      console.log(`🏢 [LOAD LOCATIONS STOCK] Calcul des statistiques pour ${allLocations.length} locations`);
       
       const locationsWithStats = allLocations.map(location => {
         const locationInventory = inventory.filter(inv => inv.location_id === location.id);
@@ -159,6 +190,8 @@ export default function StockScreen() {
           return sum + (inv.quantity_available * (product?.price_sell || 0));
         }, 0);
         
+        console.log(`🏢 [LOAD LOCATIONS STOCK] Location "${location.name}": ${productsCount} produits, ${lowStockCount} alertes, valeur: ${totalValue}`);
+        
         return {
           ...location,
           products_count: productsCount,
@@ -168,9 +201,9 @@ export default function StockScreen() {
       });
       
       setLocations(locationsWithStats);
-      console.log(`🏢 ${locationsWithStats.length} emplacements chargés`);
+      console.log(`🏢 [LOAD LOCATIONS STOCK] ${locationsWithStats.length} emplacements chargés avec statistiques`);
     } catch (error) {
-      console.error('Erreur chargement emplacements:', error);
+      console.error('❌ [LOAD LOCATIONS STOCK] Erreur chargement emplacements:', error);
     }
   };
 
@@ -465,31 +498,51 @@ export default function StockScreen() {
         });
       });
       
-      // Transformer les données de stock
-      const transformedStock: StockItem[] = stockItems.map(stock => {
-        const product = productMap.get(stock.product_id);
-        const status = getStockStatus(stock.quantity_current, stock.quantity_min);
-        
-        // Si le produit n'existe pas, ne pas l'afficher (données corrompues)
-        if (!product) {
-          console.warn(`⚠️ Produit introuvable pour stock ID: ${stock.id}, product_id: ${stock.product_id}`);
-          return null;
+      // ✅ DÉDUPLICATION ET NETTOYAGE DES STOCKS ORPHELINS
+      console.log(`🔍 [STOCK CLEANUP] Début nettoyage des stocks orphelins...`);
+      
+      // Supprimer les stocks orphelins de la base de données
+      const orphanStocks = stockItems.filter(stock => !productMap.has(stock.product_id));
+      if (orphanStocks.length > 0) {
+        console.log(`🗑️ [STOCK CLEANUP] Suppression de ${orphanStocks.length} stocks orphelins`);
+        for (const orphan of orphanStocks) {
+          console.log(`🗑️ [STOCK CLEANUP] Suppression stock orphelin: ${orphan.id} (product_id: ${orphan.product_id})`);
+          await databaseService.delete('stock', orphan.id);
         }
-        
-        return {
-          id: stock.id,
-          product_id: stock.product_id,
-          product_name: product.name,
-          product_category: product.category || 'Non catégorisé',
-          quantity_current: stock.quantity_current,
-          quantity_min: stock.quantity_min,
-          quantity_max: stock.quantity_max,
-          last_movement_date: stock.last_movement_date,
-          last_movement_type: stock.last_movement_type,
-          status,
-          sync_status: stock.sync_status || 'synced'
-        };
-      }).filter(Boolean) as StockItem[]; // Filtrer les éléments null
+      }
+      
+      // Filtrer les stocks valides (qui ont un produit correspondant)
+      const validStocks = stockItems.filter(stock => productMap.has(stock.product_id));
+      
+      // Transformer les données de stock avec déduplication
+      const transformedStock: StockItem[] = validStocks
+        .map(stock => {
+          const product = productMap.get(stock.product_id);
+          const status = getStockStatus(stock.quantity_current, stock.quantity_min);
+          
+          return {
+            id: stock.id,
+            product_id: stock.product_id,
+            product_name: product.name,
+            product_category: product.category || 'Non catégorisé',
+            quantity_current: stock.quantity_current,
+            quantity_min: stock.quantity_min,
+            quantity_max: stock.quantity_max,
+            last_movement_date: stock.last_movement_date,
+            last_movement_type: stock.last_movement_type,
+            status,
+            sync_status: stock.sync_status || 'synced'
+          };
+        })
+        // ✅ DÉDUPLICATION : Garder seulement le premier stock avec chaque ID unique
+        .reduce((unique: StockItem[], stock) => {
+          if (!unique.find(s => s.id === stock.id)) {
+            unique.push(stock);
+          }
+          return unique;
+        }, []);
+      
+      console.log(`✅ [STOCK CLEANUP] ${transformedStock.length} stocks valides après nettoyage`);
       
       // Mettre à jour UNIQUEMENT si les données ont vraiment changé
       setStockData(prev => {
@@ -560,31 +613,78 @@ export default function StockScreen() {
         });
       });
       
-      // Transformer les données de stock
-      const transformedStock: StockItem[] = stockItems.map(stock => {
-        const product = productMap.get(stock.product_id);
-        const status = getStockStatus(stock.quantity_current, stock.quantity_min);
-        
-        // Si le produit n'existe pas, ne pas l'afficher (données corrompues)
-        if (!product) {
-          console.warn(`⚠️ Produit introuvable pour stock ID: ${stock.id}, product_id: ${stock.product_id}`);
-          return null;
+      // ✅ DÉDUPLICATION ET NETTOYAGE DES STOCKS ORPHELINS
+      console.log(`🔍 [STOCK CLEANUP] Début nettoyage des stocks orphelins...`);
+      
+      // Supprimer les stocks orphelins de la base de données
+      const orphanStocks = stockItems.filter(stock => !productMap.has(stock.product_id));
+      if (orphanStocks.length > 0) {
+        console.log(`🗑️ [STOCK CLEANUP] Suppression de ${orphanStocks.length} stocks orphelins`);
+        for (const orphan of orphanStocks) {
+          console.log(`🗑️ [STOCK CLEANUP] Suppression stock orphelin: ${orphan.id} (product_id: ${orphan.product_id})`);
+          await databaseService.delete('stock', orphan.id);
         }
-        
-        return {
-          id: stock.id,
-          product_id: stock.product_id,
-          product_name: product.name,
-          product_category: product.category || 'Non catégorisé',
-          quantity_current: stock.quantity_current,
-          quantity_min: stock.quantity_min,
-          quantity_max: stock.quantity_max,
-          last_movement_date: stock.last_movement_date,
-          last_movement_type: stock.last_movement_type,
-          status,
-          sync_status: stock.sync_status || 'synced'
-        };
-      }).filter(Boolean) as StockItem[]; // Filtrer les éléments null
+      }
+      
+      // Filtrer les stocks valides (qui ont un produit correspondant)
+      const validStocks = stockItems.filter(stock => productMap.has(stock.product_id));
+      
+      // ✅ DÉDUPLICATION PAR PRODUCT_ID : Garder seulement le stock le plus récent pour chaque produit
+      const stockByProductId = new Map<string, any>();
+      validStocks.forEach(stock => {
+        const existing = stockByProductId.get(stock.product_id);
+        if (!existing) {
+          stockByProductId.set(stock.product_id, stock);
+        } else {
+          // Garder le stock le plus récent (par updated_at ou last_movement_date)
+          const existingDate = existing.updated_at || existing.last_movement_date || existing.created_at || '';
+          const currentDate = stock.updated_at || stock.last_movement_date || stock.created_at || '';
+          if (currentDate > existingDate) {
+            console.log(`🔄 [STOCK DEDUP] Remplacement stock pour product_id ${stock.product_id}: ancien ID ${existing.id} -> nouveau ID ${stock.id}`);
+            stockByProductId.set(stock.product_id, stock);
+            // Supprimer l'ancien stock de la base de données
+            databaseService.delete('stock', existing.id).catch(err => {
+              console.warn(`⚠️ Impossible de supprimer le doublon ${existing.id}:`, err);
+            });
+          } else {
+            // Supprimer le stock plus ancien
+            console.log(`🔄 [STOCK DEDUP] Suppression doublon pour product_id ${stock.product_id}: ID ${stock.id} (plus ancien)`);
+            databaseService.delete('stock', stock.id).catch(err => {
+              console.warn(`⚠️ Impossible de supprimer le doublon ${stock.id}:`, err);
+            });
+          }
+        }
+      });
+      
+      // Transformer les données de stock avec déduplication par ID unique
+      const transformedStock: StockItem[] = Array.from(stockByProductId.values())
+        .map(stock => {
+          const product = productMap.get(stock.product_id);
+          const status = getStockStatus(stock.quantity_current, stock.quantity_min);
+          
+          return {
+            id: stock.id,
+            product_id: stock.product_id,
+            product_name: product.name,
+            product_category: product.category || 'Non catégorisé',
+            quantity_current: stock.quantity_current,
+            quantity_min: stock.quantity_min,
+            quantity_max: stock.quantity_max,
+            last_movement_date: stock.last_movement_date,
+            last_movement_type: stock.last_movement_type,
+            status,
+            sync_status: stock.sync_status || 'synced'
+          };
+        })
+        // ✅ DÉDUPLICATION FINALE : Garder seulement le premier stock avec chaque ID unique (sécurité)
+        .reduce((unique: StockItem[], stock) => {
+          if (!unique.find(s => s.id === stock.id)) {
+            unique.push(stock);
+          }
+          return unique;
+        }, []);
+      
+      console.log(`✅ [STOCK CLEANUP] ${transformedStock.length} stocks valides après nettoyage`);
       
       setStockData(transformedStock);
       
@@ -629,17 +729,25 @@ export default function StockScreen() {
 
   const filters = ['Tous', 'Stock faible', 'Rupture', 'Normal'];
 
-  const filteredStock = stockData.filter(item => {
-    // Filtre par statut
-    const statusMatch = selectedFilter === 'Tous' || item.status === selectedFilter;
-    
-    // Filtre par recherche
-    const searchMatch = !searchQuery || 
-      item.product_name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      item.product_category.toLowerCase().includes(searchQuery.toLowerCase());
-    
-    return statusMatch && searchMatch;
-  });
+  const filteredStock = stockData
+    .filter(item => {
+      // Filtre par statut
+      const statusMatch = selectedFilter === 'Tous' || item.status === selectedFilter;
+      
+      // Filtre par recherche
+      const searchMatch = !searchQuery || 
+        item.product_name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        item.product_category.toLowerCase().includes(searchQuery.toLowerCase());
+      
+      return statusMatch && searchMatch;
+    })
+    // ✅ DÉDUPLICATION : Garder seulement le premier stock avec chaque ID unique
+    .reduce((unique: StockItem[], stock) => {
+      if (!unique.find(s => s.id === stock.id)) {
+        unique.push(stock);
+      }
+      return unique;
+    }, []);
 
   const getStatusColor = (status: string) => {
     switch (status) {
@@ -667,22 +775,239 @@ export default function StockScreen() {
     return Math.min((current / max) * 100, 100);
   };
 
-  // Actions fonctionnelles
-  // Charger les données de l'entrepôt
-  const loadWarehouseData = async () => {
+  // Handler pour ouvrir le modal de détails et réapprovisionnement
+  const handleProductPress = async (item: StockItem) => {
     try {
-      const warehouse = await (async () => {
+      setSelectedProduct(item);
+      setRestockQuantity('0');
+      
+      // Charger les données de l'entrepôt
+      await loadWarehouseData();
+      
+      // Ouvrir le modal
+      setShowProductDetailModal(true);
+    } catch (error) {
+      console.error('Erreur chargement détails produit:', error);
+    }
+  };
+
+  // Réapprovisionner un produit individuel
+  const handleRestockProduct = async () => {
+    if (!selectedProduct) return;
+
+    try {
+      setLoading(true);
+      
+      const quantity = parseInt(restockQuantity) || 0;
+      
+      if (quantity <= 0) {
+        Alert.alert('Erreur', 'Veuillez entrer une quantité valide');
+        return;
+      }
+      
+      // Vérifier si le produit existe dans l'entrepôt
+      const warehouse = warehouseData.find(w => w.product_id === selectedProduct.product_id);
+      
+      console.log('🔍 [DEBUG RESTOCK] Recherche produit:', selectedProduct.product_id);
+      console.log('🔍 [DEBUG RESTOCK] Nombre total d\'inventory chargés:', warehouseData.length);
+      console.log('🔍 [DEBUG RESTOCK] Produits dans inventory:', warehouseData.map(w => ({ product_id: w.product_id })));
+      
+      if (!warehouse) {
+        console.error('❌ [DEBUG RESTOCK] Produit non trouvé dans inventory');
+        Alert.alert(
+          'Erreur', 
+          `Le produit "${selectedProduct.product_name}" n'existe pas dans votre entrepôt.\n\nVeuillez ajouter ce produit dans un entrepôt depuis l'onglet "Entrepôts".`
+        );
+        return;
+      }
+      
+      console.log('✅ [DEBUG RESTOCK] Produit trouvé dans inventory:', warehouse);
+      
+      if (warehouse.quantity_available < quantity) {
+        Alert.alert(
+          'Erreur', 
+          `Stock entrepôt insuffisant.\n\nDisponible: ${warehouse.quantity_available} unités\nDemandé: ${quantity} unités`
+        );
+        return;
+      }
+      
+      // Récupérer l'utilisateur actuel
+      const currentUser = await getCurrentUser();
+      if (!currentUser) {
+        Alert.alert('Erreur', 'Utilisateur non connecté');
+        return;
+      }
+      
+      // Récupérer le produit pour obtenir le prix
+      const allProducts = await (async () => {
         const user = await getCurrentUser();
         if (!user) {
-          console.warn('⚠️ Utilisateur non connecté pour warehouse');
+          console.warn('⚠️ Utilisateur non connecté pour products');
           return [];
         }
-        return await databaseService.getAllByUser('warehouse', user.uid);
+        return await databaseService.getAllByUser('products', user.uid);
       })() as any[];
-      setWarehouseData(warehouse);
-      console.log(`🏢 ${warehouse.length} entrées d\'entrepôt chargées`);
+      const product = allProducts.find(p => p.id === selectedProduct.product_id);
+      
+      // 1. Réduire la quantité de l'entrepôt (dans inventory)
+      await databaseService.update('inventory', warehouse.id, {
+        quantity_available: warehouse.quantity_available - quantity,
+        last_movement_date: new Date().toISOString(),
+        last_movement_type: 'transfer',
+        sync_status: 'pending'
+      });
+      
+      // Ajouter à la queue de synchronisation pour l'inventory
+      await syncService.addToSyncQueue('inventory', warehouse.id, 'update', {
+        product_id: selectedProduct.product_id,
+        location_id: warehouse.location_id,
+        quantity_available: warehouse.quantity_available - quantity,
+        last_movement_date: new Date().toISOString(),
+        last_movement_type: 'transfer'
+      });
+      
+      // 2. Augmenter la quantité du stock magasin
+      const newStockQuantity = selectedProduct.quantity_current + quantity;
+      
+      // Invalider le cache AVANT la mise à jour pour forcer un rechargement depuis AsyncStorage
+      databaseService.invalidateCache('stock');
+      
+      // Mettre à jour le stock dans AsyncStorage
+      await databaseService.update('stock', selectedProduct.id, {
+        quantity_current: newStockQuantity,
+        last_movement_date: new Date().toISOString(),
+        last_movement_type: 'transfer',
+        sync_status: 'pending'
+      });
+      
+      console.log(`✅ [RESTOCK DEBUG] Stock mis à jour localement: ${selectedProduct.product_name} -> ${newStockQuantity}`);
+      
+      // Mettre à jour immédiatement l'état local pour éviter l'affichage de l'ancien état
+      setStockData(prevStock => {
+        const updated = prevStock.map(item => 
+          item.id === selectedProduct.id
+            ? { ...item, quantity_current: newStockQuantity, last_movement_date: new Date().toISOString() }
+            : item
+        );
+        return updated;
+      });
+      
+      // Ajouter à la queue de synchronisation pour le stock
+      await syncService.addToSyncQueue('stock', selectedProduct.id, 'update', {
+        product_id: selectedProduct.product_id,
+        quantity_current: newStockQuantity,
+        last_movement_date: new Date().toISOString(),
+        last_movement_type: 'transfer'
+      });
+      
+      // 3. Créer un mouvement de stock
+      const movementId = await databaseService.insert('stock_movements', {
+        movement_number: `MV-${Date.now()}`,
+        movement_date: new Date().toISOString(),
+        movement_type: 'entry',
+        location_id: warehouse.location_id || '',
+        product_id: selectedProduct.product_id,
+        product_name: selectedProduct.product_name,
+        quantity: quantity,
+        quantity_before: selectedProduct.quantity_current,
+        quantity_after: newStockQuantity,
+        reference_id: warehouse.id,
+        reference_type: 'warehouse_transfer',
+        notes: `Réapprovisionnement depuis entrepôt`,
+        created_by: currentUser.uid,
+        created_by_name: currentUser.email || 'Utilisateur',
+        created_at: new Date().toISOString(),
+        sync_status: 'pending'
+      });
+      
+      // Ajouter à la queue de synchronisation pour le mouvement
+      await syncService.addToSyncQueue('stock_movements', movementId, 'create', {
+        movement_number: `MV-${Date.now()}`,
+        movement_date: new Date().toISOString(),
+        movement_type: 'entry',
+        location_id: warehouse.location_id || '',
+        product_id: selectedProduct.product_id,
+        product_name: selectedProduct.product_name,
+        quantity: quantity,
+        quantity_before: selectedProduct.quantity_current,
+        quantity_after: newStockQuantity,
+        reference_id: warehouse.id,
+        reference_type: 'warehouse_transfer',
+        notes: `Réapprovisionnement depuis entrepôt`,
+        created_by: currentUser.uid,
+        created_by_name: currentUser.email || 'Utilisateur',
+      });
+      
+      // Invalider tous les caches liés
+      databaseService.invalidateCache('inventory');
+      databaseService.invalidateCache('stock_movements');
+      
+      // Recharger les données depuis AsyncStorage après un court délai pour s'assurer que tout est écrit
+      await new Promise(resolve => setTimeout(resolve, 100));
+      await loadStockData();
+      await loadWarehouseData();
+      
+      // Synchroniser APRÈS le rechargement pour éviter que le listener écrase nos données
+      if (isConnected) {
+        console.log(`🔄 [RESTOCK DEBUG] Démarrage synchronisation après ${new Date().getTime()}`);
+        // Attendre un peu pour que l'UI se mette à jour
+        await new Promise(resolve => setTimeout(resolve, 500));
+        await syncService.startSync();
+        console.log(`✅ [RESTOCK DEBUG] Synchronisation terminée`);
+      }
+      
+      // Fermer le modal
+      setShowProductDetailModal(false);
+      
+      Alert.alert('Succès', `✅ ${quantity} unités de "${selectedProduct.product_name}" ont été transférées de l'entrepôt vers le magasin !`);
     } catch (error) {
-      console.error('Erreur chargement entrepôt:', error);
+      console.error('Erreur réapprovisionnement:', error);
+      Alert.alert('Erreur', 'Impossible de réapprovisionner le produit');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Actions fonctionnelles
+  // Charger les données de l'entrepôt (depuis inventory au lieu de warehouse)
+  const loadWarehouseData = async () => {
+    try {
+      const inventory = await (async () => {
+        const user = await getCurrentUser();
+        if (!user) {
+          console.warn('⚠️ Utilisateur non connecté pour inventory');
+          return [];
+        }
+        return await databaseService.getAllByUser('inventory', user.uid);
+      })() as any[];
+      
+      // Transformer les données d'inventory en format compatible avec le code existant
+      const warehouse = inventory.map(inv => ({
+        id: inv.id,
+        product_id: inv.product_id,
+        quantity_available: inv.quantity_available,
+        warehouse_min: inv.quantity_min,
+        warehouse_max: inv.quantity_max,
+        location_id: inv.location_id,
+      }));
+      
+      console.log(`🏢 [LOAD WAREHOUSE] ${warehouse.length} entrées d'inventory chargées`);
+      if (warehouse.length > 0) {
+        console.log('🏢 [LOAD WAREHOUSE] Exemples de product_ids:', warehouse.slice(0, 3).map(w => w.product_id));
+        console.log('🏢 [LOAD WAREHOUSE] Exemples de location_ids:', warehouse.slice(0, 3).map(w => w.location_id));
+      } else {
+        console.warn('⚠️ [LOAD WAREHOUSE] AUCUN inventory trouvé dans la BDD !');
+        const allInv = await databaseService.getAll('inventory');
+        console.log(`⚠️ [LOAD WAREHOUSE DEBUG] Total inventory dans la BDD: ${allInv.length}`);
+        allInv.forEach((invItem: any) => {
+          console.log(`⚠️ [LOAD WAREHOUSE DEBUG] Inventory: product_id=${invItem.product_id}, location_id=${invItem.location_id}, created_by=${invItem.created_by}`);
+        });
+      }
+      
+      setWarehouseData(warehouse);
+      console.log(`🏢 [LOAD WAREHOUSE] ${warehouse.length} entrées d\'inventory chargées pour réapprovisionnement`);
+    } catch (error) {
+      console.error('Erreur chargement inventory:', error);
     }
   };
 
@@ -741,6 +1066,9 @@ export default function StockScreen() {
       let transferredCount = 0;
       let errors: string[] = [];
       
+      // Récupérer l'utilisateur actuel pour les mouvements de stock
+      const currentUser = await getCurrentUser();
+      
       for (const [stockId, {quantity}] of selectedItems) {
         try {
           const stockItem = stockData.find(item => item.id === stockId);
@@ -759,18 +1087,21 @@ export default function StockScreen() {
             continue;
           }
           
-          // 1. Réduire la quantité de l'entrepôt
-          await databaseService.update('warehouse', warehouse.id, {
+          // 1. Réduire la quantité de l'entrepôt (dans inventory)
+          await databaseService.update('inventory', warehouse.id, {
             quantity_available: warehouse.quantity_available - quantity,
-            last_transfer_date: new Date().toISOString(),
+            last_movement_date: new Date().toISOString(),
+            last_movement_type: 'transfer',
             sync_status: 'pending'
           });
           
-          // Ajouter à la queue de synchronisation pour l'entrepôt
-          await syncService.addToSyncQueue('warehouse', warehouse.id, 'update', {
+          // Ajouter à la queue de synchronisation pour l'inventory
+          await syncService.addToSyncQueue('inventory', warehouse.id, 'update', {
             product_id: stockItem.product_id,
+            location_id: warehouse.location_id,
             quantity_available: warehouse.quantity_available - quantity,
-            last_transfer_date: new Date().toISOString()
+            last_movement_date: new Date().toISOString(),
+            last_movement_type: 'transfer'
           });
           
           // 2. Augmenter la quantité du stock magasin
@@ -790,6 +1121,46 @@ export default function StockScreen() {
             last_movement_type: 'transfer'
           });
           
+          // 3. Créer un mouvement de stock
+          if (currentUser) {
+            const movementId = await databaseService.insert('stock_movements', {
+              movement_number: `MV-${Date.now()}`,
+              movement_date: new Date().toISOString(),
+              movement_type: 'entry',
+              location_id: warehouse.location_id || '',
+              product_id: stockItem.product_id,
+              product_name: stockItem.product_name,
+              quantity: quantity,
+              quantity_before: stockItem.quantity_current,
+              quantity_after: newStockQuantity,
+              reference_id: warehouse.id,
+              reference_type: 'warehouse_transfer',
+              notes: `Réapprovisionnement depuis entrepôt`,
+              created_by: currentUser.uid,
+              created_by_name: currentUser.email || 'Utilisateur',
+              created_at: new Date().toISOString(),
+              sync_status: 'pending'
+            });
+            
+            // Ajouter à la queue de synchronisation pour le mouvement
+            await syncService.addToSyncQueue('stock_movements', movementId, 'create', {
+              movement_number: `MV-${Date.now()}`,
+              movement_date: new Date().toISOString(),
+              movement_type: 'entry',
+              location_id: warehouse.location_id || '',
+              product_id: stockItem.product_id,
+              product_name: stockItem.product_name,
+              quantity: quantity,
+              quantity_before: stockItem.quantity_current,
+              quantity_after: newStockQuantity,
+              reference_id: warehouse.id,
+              reference_type: 'warehouse_transfer',
+              notes: `Réapprovisionnement depuis entrepôt`,
+              created_by: currentUser.uid,
+              created_by_name: currentUser.email || 'Utilisateur',
+            });
+          }
+          
           transferredCount++;
           console.log(`✅ Transfert réussi: ${quantity} unités de ${stockItem.product_name}`);
         } catch (error) {
@@ -799,16 +1170,22 @@ export default function StockScreen() {
         }
       }
       
-      // Synchroniser si en ligne
-      if (isConnected) {
-        await syncService.startSync();
-      }
+      console.log(`✅ [RESTOCK GROUP DEBUG] Mise à jour locale terminée pour ${transferredCount} produits`);
       
-      // Recharger les données
+      // Recharger les données AVANT la synchronisation pour éviter les conflits avec le listener
       databaseService.invalidateCache('stock');
-      databaseService.invalidateCache('warehouse');
+      databaseService.invalidateCache('inventory');
       await loadStockData();
       await loadWarehouseData();
+      
+      // Synchroniser APRÈS le rechargement pour éviter que le listener écrase nos données
+      if (isConnected) {
+        console.log(`🔄 [RESTOCK GROUP DEBUG] Démarrage synchronisation après ${new Date().getTime()}`);
+        // Attendre un peu pour que l'UI se mette à jour
+        await new Promise(resolve => setTimeout(resolve, 500));
+        await syncService.startSync();
+        console.log(`✅ [RESTOCK GROUP DEBUG] Synchronisation terminée`);
+      }
       
       // Fermer la modale
       setShowRestockModal(false);
@@ -1047,7 +1424,11 @@ export default function StockScreen() {
 
   const renderStockItem = ({ item }: { item: StockItem }) => (
     <View style={styles.stockCardContainer}>
-      <View style={styles.stockCard}>
+      <TouchableOpacity 
+        style={styles.stockCard}
+        onPress={() => handleProductPress(item)}
+        activeOpacity={0.7}
+      >
       <View style={styles.stockHeader}>
         <View style={styles.stockInfo}>
             <Text style={styles.stockName}>{item.product_name}</Text>
@@ -1111,12 +1492,15 @@ export default function StockScreen() {
         {/* Bouton de suppression intégré dans la card */}
         <TouchableOpacity
           style={styles.deleteButtonInCard}
-          onPress={() => handleDeleteStock(item.id, item.product_name)}
+          onPress={(e) => {
+            e.stopPropagation(); // Empêcher l'ouverture du modal
+            handleDeleteStock(item.id, item.product_name);
+          }}
           disabled={loading}
         >
           <Ionicons name="trash-outline" size={20} color="#FF3B30" />
     </TouchableOpacity>
-      </View>
+      </TouchableOpacity>
     </View>
   );
 
@@ -1339,12 +1723,7 @@ export default function StockScreen() {
 
       {/* Actions rapides */}
       <View style={styles.actionsContainer}>
-        <TouchableOpacity 
-          style={styles.actionButton}
-          onPress={handleReapprovision}
-        >
-          <Text style={styles.actionButtonText}>📦 Réapprovisionner</Text>
-        </TouchableOpacity>
+        
         <TouchableOpacity 
           style={[styles.actionButton, styles.secondaryButton]}
           onPress={handleGenerateReport}
@@ -1549,6 +1928,198 @@ export default function StockScreen() {
               >
                 <Text style={styles.modalButtonText}>
                   {loading ? 'Transfert...' : 'Confirmer le Transfert'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Modal de détails et réapprovisionnement individuel */}
+      <Modal
+        visible={showProductDetailModal}
+        animationType="slide"
+        transparent={true}
+        onRequestClose={() => setShowProductDetailModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>📦 Détails Produit</Text>
+              <TouchableOpacity onPress={() => setShowProductDetailModal(false)}>
+                <Ionicons name="close" size={28} color="#000" />
+              </TouchableOpacity>
+            </View>
+
+            {selectedProduct && (
+              <ScrollView style={styles.modalScroll} showsVerticalScrollIndicator={false}>
+                {/* Informations produit */}
+                <View style={styles.detailSection}>
+                  <Text style={styles.detailSectionTitle}>Informations du Produit</Text>
+                  <View style={styles.detailRow}>
+                    <Text style={styles.detailRowLabel}>Nom:</Text>
+                    <Text style={styles.detailRowValue}>{selectedProduct.product_name}</Text>
+                  </View>
+                  <View style={styles.detailRow}>
+                    <Text style={styles.detailRowLabel}>Catégorie:</Text>
+                    <Text style={styles.detailRowValue}>{selectedProduct.product_category}</Text>
+                  </View>
+                  <View style={styles.detailRow}>
+                    <Text style={styles.detailRowLabel}>Statut:</Text>
+                    <View style={[styles.detailBadge, { backgroundColor: getStatusBackgroundColor(selectedProduct.status) }]}>
+                      <Text style={[styles.detailBadgeText, { color: getStatusColor(selectedProduct.status) }]}>
+                        {selectedProduct.status}
+                      </Text>
+                    </View>
+                  </View>
+                </View>
+
+                {/* Stock actuel */}
+                <View style={styles.detailSection}>
+                  <Text style={styles.detailSectionTitle}>Stock Actuel</Text>
+                  <View style={styles.stockInfoContainer}>
+                    <View style={styles.stockInfoBox}>
+                      <Text style={styles.stockInfoLabel}>Stock actuel</Text>
+                      <Text style={styles.stockInfoValue}>{selectedProduct.quantity_current}</Text>
+                    </View>
+                    <View style={styles.stockInfoBox}>
+                      <Text style={styles.stockInfoLabel}>Stock minimum</Text>
+                      <Text style={styles.stockInfoValue}>{selectedProduct.quantity_min}</Text>
+                    </View>
+                    <View style={styles.stockInfoBox}>
+                      <Text style={styles.stockInfoLabel}>Stock maximum</Text>
+                      <Text style={styles.stockInfoValue}>{selectedProduct.quantity_max}</Text>
+                    </View>
+                  </View>
+                </View>
+
+                {/* Entrepôt */}
+                <View style={styles.detailSection}>
+                  <Text style={styles.detailSectionTitle}>Stock Entrepôt</Text>
+                  {(() => {
+                    const warehouse = warehouseData.find(w => w.product_id === selectedProduct.product_id);
+                    return warehouse ? (
+                      <View style={styles.warehouseInfo}>
+                        <View style={styles.warehouseQuantityBox}>
+                          <Text style={styles.warehouseQuantityLabel}>Quantité disponible</Text>
+                          <Text style={[styles.warehouseQuantityValue, { 
+                            color: warehouse.quantity_available < warehouse.quantity_available ? '#FF3B30' : '#34C759' 
+                          }]}>
+                            {warehouse.quantity_available} unités
+                          </Text>
+                        </View>
+                        {warehouse.quantity_available < warehouse.warehouse_min && (
+                          <Text style={styles.warehouseWarning}>
+                            ⚠️ Stock entrepôt faible (min: {warehouse.warehouse_min})
+                          </Text>
+                        )}
+                      </View>
+                    ) : (
+                      <View style={styles.warehouseInfo}>
+                        <Text style={styles.noWarehouseWarning}>
+                          ⚠️ Ce produit n'existe pas dans votre entrepôt
+                        </Text>
+                      </View>
+                    );
+                  })()}
+                </View>
+
+                {/* Formulaire de réapprovisionnement */}
+                {(() => {
+                  const warehouse = warehouseData.find(w => w.product_id === selectedProduct.product_id);
+                  if (!warehouse) return null;
+                  
+                  return (
+                    <View style={styles.detailSection}>
+                      <Text style={styles.detailSectionTitle}>Réapprovisionner</Text>
+                      <View style={styles.restockForm}>
+                        <Text style={styles.restockLabel}>Quantité à transférer</Text>
+                        <View style={styles.quantityInputRow}>
+                          <TouchableOpacity
+                            style={styles.quantityButton}
+                            onPress={() => {
+                              const qty = parseInt(restockQuantity) || 0;
+                              setRestockQuantity(Math.max(0, qty - 10).toString());
+                            }}
+                          >
+                            <Text style={styles.quantityButtonText}>-10</Text>
+                          </TouchableOpacity>
+                          
+                          <TouchableOpacity
+                            style={styles.quantityButton}
+                            onPress={() => {
+                              const qty = parseInt(restockQuantity) || 0;
+                              setRestockQuantity(Math.max(0, qty - 1).toString());
+                            }}
+                          >
+                            <Text style={styles.quantityButtonText}>-</Text>
+                          </TouchableOpacity>
+
+                          <TextInput
+                            style={styles.quantityInputMain}
+                            value={restockQuantity}
+                            onChangeText={(text) => {
+                              const num = parseInt(text) || 0;
+                              const maxTransfer = warehouse?.quantity_available || 0;
+                              setRestockQuantity(Math.min(num, maxTransfer).toString());
+                            }}
+                            keyboardType="numeric"
+                            placeholder="0"
+                          />
+
+                          <TouchableOpacity
+                            style={styles.quantityButton}
+                            onPress={() => {
+                              const qty = parseInt(restockQuantity) || 0;
+                              const maxTransfer = warehouse?.quantity_available || 0;
+                              setRestockQuantity(Math.min(qty + 1, maxTransfer).toString());
+                            }}
+                          >
+                            <Text style={styles.quantityButtonText}>+</Text>
+                          </TouchableOpacity>
+
+                          <TouchableOpacity
+                            style={styles.quantityButton}
+                            onPress={() => {
+                              const qty = parseInt(restockQuantity) || 0;
+                              const maxTransfer = warehouse?.quantity_available || 0;
+                              setRestockQuantity(Math.min(qty + 10, maxTransfer).toString());
+                            }}
+                          >
+                            <Text style={styles.quantityButtonText}>+10</Text>
+                          </TouchableOpacity>
+
+                          <TouchableOpacity
+                            style={[styles.quantityButton, styles.maxButton]}
+                            onPress={() => {
+                              const maxTransfer = warehouse?.quantity_available || 0;
+                              setRestockQuantity(maxTransfer.toString());
+                            }}
+                          >
+                            <Text style={[styles.quantityButtonText, { color: '#007AFF' }]}>MAX</Text>
+                          </TouchableOpacity>
+                        </View>
+                      </View>
+                    </View>
+                  );
+                })()}
+              </ScrollView>
+            )}
+
+            <View style={styles.modalFooter}>
+              <TouchableOpacity
+                style={[styles.modalButton, styles.modalButtonCancel]}
+                onPress={() => setShowProductDetailModal(false)}
+              >
+                <Text style={styles.modalButtonTextCancel}>Annuler</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.modalButton, styles.modalButtonConfirm]}
+                onPress={handleRestockProduct}
+                disabled={loading || parseInt(restockQuantity) <= 0}
+              >
+                <Text style={styles.modalButtonText}>
+                  {loading ? 'Transfert...' : 'Réapprovisionner'}
                 </Text>
               </TouchableOpacity>
             </View>
@@ -2103,5 +2674,130 @@ const styles = StyleSheet.create({
     color: '#1a1a1a',
     fontSize: dynamicSizes.fontSize.medium,
     fontWeight: '600',
+  },
+  // Styles pour le modal de détails produit
+  detailSection: {
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    padding: dynamicSizes.spacing.lg,
+    marginBottom: dynamicSizes.spacing.lg,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  detailSectionTitle: {
+    fontSize: dynamicSizes.fontSize.large,
+    fontWeight: '600',
+    color: '#1a1a1a',
+    marginBottom: dynamicSizes.spacing.md,
+  },
+  detailRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: dynamicSizes.spacing.sm,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f0f0f0',
+  },
+  detailRowLabel: {
+    fontSize: dynamicSizes.fontSize.medium,
+    color: '#666',
+  },
+  detailRowValue: {
+    fontSize: dynamicSizes.fontSize.medium,
+    fontWeight: '600',
+    color: '#1a1a1a',
+    flex: 1,
+    textAlign: 'right',
+  },
+  detailBadge: {
+    paddingHorizontal: dynamicSizes.spacing.sm,
+    paddingVertical: 4,
+    borderRadius: 6,
+  },
+  detailBadgeText: {
+    fontSize: dynamicSizes.fontSize.small,
+    fontWeight: '600',
+  },
+  stockInfoContainer: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: dynamicSizes.spacing.sm,
+  },
+  stockInfoBox: {
+    flex: 1,
+    backgroundColor: '#f8f9fa',
+    borderRadius: 8,
+    padding: dynamicSizes.spacing.md,
+    alignItems: 'center',
+  },
+  stockInfoLabel: {
+    fontSize: dynamicSizes.fontSize.small,
+    color: '#666',
+    marginBottom: 4,
+  },
+  stockInfoValue: {
+    fontSize: dynamicSizes.fontSize.large,
+    fontWeight: 'bold',
+    color: '#007AFF',
+  },
+  warehouseInfo: {
+    backgroundColor: '#f8f9fa',
+    borderRadius: 8,
+    padding: dynamicSizes.spacing.md,
+  },
+  warehouseQuantityBox: {
+    alignItems: 'center',
+    marginBottom: dynamicSizes.spacing.sm,
+  },
+  warehouseQuantityLabel: {
+    fontSize: dynamicSizes.fontSize.small,
+    color: '#666',
+    marginBottom: 4,
+  },
+  warehouseQuantityValue: {
+    fontSize: dynamicSizes.fontSize.xlarge,
+    fontWeight: 'bold',
+  },
+  warehouseWarning: {
+    fontSize: dynamicSizes.fontSize.small,
+    color: '#FF9500',
+    textAlign: 'center',
+  },
+  noWarehouseWarning: {
+    fontSize: dynamicSizes.fontSize.medium,
+    color: '#FF3B30',
+    textAlign: 'center',
+    fontWeight: '600',
+  },
+  restockForm: {
+    backgroundColor: '#f8f9fa',
+    borderRadius: 8,
+    padding: dynamicSizes.spacing.md,
+  },
+  restockLabel: {
+    fontSize: dynamicSizes.fontSize.medium,
+    fontWeight: '600',
+    color: '#1a1a1a',
+    marginBottom: dynamicSizes.spacing.sm,
+  },
+  quantityInputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: dynamicSizes.spacing.xs,
+  },
+  quantityInputMain: {
+    flex: 1,
+    backgroundColor: '#fff',
+    borderWidth: 1,
+    borderColor: '#007AFF',
+    borderRadius: 8,
+    paddingVertical: dynamicSizes.spacing.sm,
+    paddingHorizontal: dynamicSizes.spacing.md,
+    fontSize: dynamicSizes.fontSize.large,
+    textAlign: 'center',
+    fontWeight: 'bold',
   },
 });
